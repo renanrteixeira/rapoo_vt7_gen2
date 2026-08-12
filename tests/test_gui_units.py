@@ -46,11 +46,17 @@ class ParamsRenderPlanTest(unittest.TestCase):
         self.assertEqual(selects["press_debounce"], (4, True))
         self.assertNotIn("press_debounce", read_onlys)
 
-    def test_selectable_slider_with_offrange_value_unmarks(self):
+    def test_selectable_slider_with_offrange_value_unmarks_and_disables(self):
         info = clean_info()
         info["params"]["press_debounce"]["raw"] = 99
         _checks, selects, _ro = gui.params_render_plan(info, None)
-        self.assertEqual(selects["press_debounce"], (None, True))
+        self.assertEqual(selects["press_debounce"], (None, False))
+
+    def test_selectable_slider_offgrid_raw_snaps_to_grid(self):
+        info = clean_info()
+        info["params"]["press_debounce"]["raw"] = 3
+        _checks, selects, _ro = gui.params_render_plan(info, None)
+        self.assertEqual(selects["press_debounce"], (4, True))
 
     def test_lift_off_slider_value_scaled(self):
         info = clean_info()
@@ -65,6 +71,7 @@ class ParamsRenderPlanTest(unittest.TestCase):
             self.assertFalse(sensitive)
         self.assertTrue(all(active for active, _s in checks.values()))
         for active, sensitive in selects.values():
+            self.assertIsNotNone(active)
             self.assertFalse(sensitive)
 
     def test_error_without_known_info_zeros_toggles(self):

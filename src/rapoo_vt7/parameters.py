@@ -9,12 +9,12 @@ restored exactly).
 A toggle is shipped ONLY for a field whose byte semantics the on-device
 write-test confirmed as a 1-byte on/off bool:
     motion_sync 0x0885, glass_track 0x08C5, dc_switch 0x08DA
-The remaining §C bytes are parameters, NOT toggles, and are exposed as
-read-only state:
-    linear_ripple 0x08C3  reads/takes 0x03..0 (numeric scale, not a bool)
-    sensor_angle 0x08C4   numeric/manual setting, scale unconfirmed
+The remaining §C bytes are parameters, NOT toggles. Those with a confirmed
+A Hub range render as selectable sliders (see `SELECTABLE`):
     press/release debounce (0x08C0/0x08C1, ms), sleep_time (0x08C2, minutes),
-    lift_off (0x0884, mm scale) — numeric scales
+    sensor_angle (0x08C4, signed byte), lift_off (0x0884, mm scale)
+The rest are exposed as read-only state:
+    linear_ripple 0x08C3  reads/takes 0x03..0 (numeric scale, not a bool)
     low_power (0x08C6) / power_save (0x08AC) — two candidate addresses whose
     exact function was not resolved; writing either is guesswork
 Wave correction has no confirmed address at all. None of the shipped toggles
@@ -42,14 +42,6 @@ PARAMS = (
 )
 
 _PARAM_BY_NAME = {name: (offset, editable) for name, offset, editable in PARAMS}
-
-# Documented units for the read-only numeric rows (FEATURES.md §2.C). Fields
-# without a confirmed scale (lift_off mm, sensor_angle) stay unit-less.
-PARAM_UNITS = {
-    "press_debounce": "ms",
-    "release_debounce": "ms",
-    "sleep_time": "min",
-}
 
 # Selectable §C parameters, each with its A Hub slider range (min, max, step)
 # in the units the A Hub shows, a map tag and a unit. A parameter listed here
