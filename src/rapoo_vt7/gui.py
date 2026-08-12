@@ -65,9 +65,12 @@ def params_render_plan(info, error):
     `info` is a `parameters.read_section` payload (or None) and `error` a
     section-level error string (or None). Returns (checks, selects,
     read_onlys) where `checks` maps toggle name -> (active, sensitive),
-    `selects` maps selectable-combo name -> (active index or None, sensitive)
-    and `read_onlys` maps state-row name -> display text. On error the
-    last-known values are retained (never nulled) and every input is disabled.
+    `selects` maps selectable-param name -> (display value on the step grid
+    or None, sensitive) and `read_onlys` maps state-row name -> display text.
+    On error the last-known values are retained (never nulled) and every
+    input is disabled. A raw byte outside the A Hub range, or between two
+    grid steps, never leaves the slider at a stale/misleading position: it
+    is snapped to the grid when representable and disabled otherwise.
     """
     checks = {}
     selects = {}
@@ -81,24 +84,28 @@ def params_render_plan(info, error):
                 error is None and p is not None,
             )
         elif parameters.is_selectable(name):
+            p_ok = error is None and p is not None
             display = parameters.byte_to_display(name, p["raw"]) if p else None
             if display is not None:
-                lo, hi, _step = parameters.param_range(name)
+                lo, hi, step = parameters.param_range(name)
                 if not (lo - 1e-9 <= display <= hi + 1e-9):
                     display = None
-            selects[name] = (display, error is None and p is not None)
+                else:
+                    display = min(
+                        lo + int(round((display - lo) / step)) * step, hi
+                    )
+            selects[name] = (display, p_ok and display is not None)
         else:
             read_onlys[name] = _param_state_text(name, p)
     return checks, selects, read_onlys
 
 
 def _param_state_text(name, p):
-    """Display text of a read-only §C row: raw int plus the documented unit
-    (debounce ms, sleep min) where confirmed."""
+    """Display text of a read-only §C row (raw int; the remaining §C fields
+    have no confirmed unit, so they render unit-less)."""
     if p is None:
         return "--"
-    unit = parameters.PARAM_UNITS.get(name)
-    return "%d %s" % (p["raw"], unit) if unit else "%d" % p["raw"]
+    return "%d" % p["raw"]
 
 
 def params_status_text(t, info, error):
@@ -509,12 +516,11 @@ class BatteryWindow:
         self._param_check = {}
         self._param_state = {}
         self._param_readonly = set()
+        self._param_timers = {}
         for name, _offset, editable in parameters.PARAMS:
             if editable:
                 cb = Gtk.CheckButton(label=self._t("param_" + name))
                 cb.set_active(False)
-                if name == "low_power":
-                    cb.set_tooltip_text(self._t("param_low_power_tt"))
                 cb.connect("toggled", self._on_param_toggled, name)
                 self._param_check[name] = cb
                 self._param_box.pack_start(cb, False, False, 0)
@@ -547,6 +553,8 @@ class BatteryWindow:
                 row.pack_start(lbl, True, True, 0)
                 row.pack_start(widget, False, False, 0)
                 self._param_state[name] = (lbl, widget)
+                if name == "low_power":
+                    lbl.set_tooltip_text(self._t("param_low_power_tt"))
                 self._param_box.pack_start(row, False, False, 0)
         vbox.pack_start(self._param_box, False, False, 0)
 
@@ -559,8 +567,26 @@ class BatteryWindow:
     def _on_param_scale(self, scale, name):
         if self._perf_loading:
             return
-        if self._on_set_param_choice:
-            self._on_set_param_choice(name, scale.get_value())
+        if not self._on_set_param_choice:
+            return
+        lo, hi, step = parameters.param_range(name)
+        value = scale.get_value()
+        grid = int(round((value - lo) / step))
+        value = min(max(lo + grid * step, lo), hi)
+        timer = self._param_timers.get(name)
+        if timer is not None:
+            GLib.source_remove(timer)
+        self._param_timers[name] = GLib.timeout_add(
+            150, self._on_param_scale_flush, name, value
+        )
+
+    def _on_param_scale_flush(self, name, value):
+        # Coalesces a drag into ONE EEPROM write (value-changed fires per
+        # tick; without this every tick would submit a wake=True write).
+        self._param_timers.pop(name, None)
+        if not self._perf_loading and self._on_set_param_choice:
+            self._on_set_param_choice(name, value)
+        return False
 
     def _on_rate_toggled(self, btn, hz):
         if self._perf_loading:
@@ -937,10 +963,10 @@ class BatteryWindow:
             )
             for name, cb in self._param_check.items():
                 cb.set_label(self._t("param_" + name))
-                if name == "low_power":
-                    cb.set_tooltip_text(self._t("param_low_power_tt"))
             for name, (lbl, val) in self._param_state.items():
                 lbl.set_text(self._t("param_" + name))
+                if name == "low_power":
+                    lbl.set_tooltip_text(self._t("param_low_power_tt"))
                 if name in self._param_readonly:
                     val.set_tooltip_text(self._t("param_read_only"))
             self._render()

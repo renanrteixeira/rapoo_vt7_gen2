@@ -48,3 +48,9 @@ modify existing entries; only append.
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-3-mouse-parameters-toggles.md`
   summary: Wave correction has no confirmed EEPROM address: the A Hub exposes `rippleCorrection`/`waveformCorrection` parameters but no §C byte is bound to it. Left out of the UI (not even read-only) and recorded here as deferred until the bundle/device probing maps it.
   evidence: docs/FEATURES.md §2.C "Wave correction" row stays ⚠️ without an EEPROM address; no settings.FIELDS entry exists.
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-3-mouse-parameters-toggles.md`
+  summary: The RF radio pair (`_on_rf_toggled`, story 3-2 widget committed alongside the 3-3 sliders) has no `btn.get_active()` guard, so one click emits `toggled` on both radios and submits `_on_set_rf` twice (potentially conflicting values + two notifications).
+  evidence: gui.py `_on_rf_toggled` reads `self._rf_radio[1].get_active()` unconditionally; `_on_rate_toggled`/`_on_perf_toggled` in the same file do guard on `btn.get_active()`. Surfaced by the 3-3 review; out of 3-3 scope (RF is story 3-2).
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-3-mouse-parameters-toggles.md`
+  summary: The battery-tab product image (`assets/mouse2.png`, `gui.py` `_MOUSE_IMAGE_PATH`/`_mouse_pixbuf`/`_draw_image_fit`) overclaims install safety (the three-dirname-up path resolves into site-packages, where assets are never installed), falls back to `draw_mouse` silently with no log, leaves `scale_simple`'s None return unguarded, and has no headless test coverage; it is also undocumented in CONTEXT.md/FEATURES.md.
+  evidence: gui.py:18-49 comment says "so it also works from an install"; installed packages have no `assets/` dir; introduced with the mouse2.png change, surfaced by the 3-3 review (not this story's scope).

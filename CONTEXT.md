@@ -294,9 +294,11 @@ captured before any write.
       RF toggles + state in the Desempenho tab. **§C parameters (story 3-3)
       DONE** (`parameters.py`): confirmed bool toggles motion_sync `0x0885`,
       glass `0x08C5`, DC switch `0x08DA` (write-test 2026-08-11, all 11 §C
-      bytes read→write→re-read→restore); the rest are read-only state
-      (linear_ripple numeric 0..3, debounce ms, sleep min, lift-off, sensor
-      angle, low_power/power_save unresolved, wave correction no address).
+      bytes read→write→re-read→restore); debounce 0x08C0/0x08C1, sleep time,
+      sensor angle and lift-off render as **sliders** (`parameters.SELECTABLE`,
+      A Hub ranges, on-grid writes verified); read-only rows: linear_ripple
+      numeric 0..3, low_power/power_save unresolved, wave correction no
+      address.
       **Polling-rate UI + RF radios DONE (2026-08-11)**: `performance.set_rate`
       writes the rateCode of a RATE_HZ value to `0x0880` + readback verify;
       the Desempenho tab shows a **radio per slot (125..8000 Hz)** with the

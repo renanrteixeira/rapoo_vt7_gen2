@@ -2,7 +2,7 @@
 title: '3-3 Mouse parameters toggles'
 type: 'feature'
 created: '2026-08-11'
-status: 'in-review'
+status: 'done'
 baseline_commit: 'NO_VCS'
 review_loop_iteration: 0
 context:
@@ -136,6 +136,9 @@ guesswork toggles.
   fields.
 - Given a readback mismatch, the change is rejected and an error is surfaced —
   never accepted.
+- Given a slider write, only values on the parameter's A Hub grid are written
+  (off-grid/off-range refused) and a drag coalesces into one write, not one
+  per tick.
 - Given an unconfirmed field, no toggle is shipped for it (read-only/hidden +
   defer entry).
 - Given a language change, the new §C labels re-translate.
@@ -156,6 +159,23 @@ guesswork toggles.
   `linear_ripple` numeric → read-only, `sensor_angle` scale unconfirmed →
   read-only, `low_power` two addresses unresolved → read-only, wave correction →
   not exposed; 4 defer entries appended. Suite 139→158, all pass.
+- 2026-08-12 (review): slider UI added after the 2026-08-11 story shipped
+  (human renegotiation; see Design Notes below): `parameters.SELECTABLE`
+  (debounce 0–32 ms step 2, sleep 2–120 min, angle −30°..30° signed, lift-off
+  1.0–2.0 mm byte 1..11) + `set_param_choice` (A-Hub grid enforced,
+  readback-verified) and Gtk.Scale sliders in the Parâmetros tab. The
+  debounce/sleep/angle/lift-off byte maps are OUR inference (A Hub defaults
+  agree) — definitive = diff an A Hub write (P9). Review patches applied:
+  slider drags coalesced to a 150 ms debounce + step-grid snap (no per-tick
+  EEPROM writes, no off-grid refusals from drags); off-range/off-grid raw
+  bytes disable the slider instead of leaving a stale enabled value;
+  `PARAM_UNITS` removed (all three entries became SELECTABLE); low_power
+  tooltip moved onto the read-only row (the checkbox branch was dead code);
+  module docstring, CONTEXT.md §8.B3 and FEATURES.md §2.C header de-contradicted.
+  New tests: decode boundaries (lift_off 0/12, angle ±30 span, non-numeric
+  reject), off-grid snap/off-range disable, error retains slider values,
+  `_on_set_param_choice` wake+choice and `_param_changed` option/toggle
+  formatting. Suite 204→211, all pass.
 
 ## Design Notes
 
@@ -164,11 +184,12 @@ validated: baseline exists → write the candidate byte → re-read → restore 
 log. That is what confirms each field's value semantics (bool 0/1 vs numeric,
 bit positions) before its toggle is enabled, and feeds `docs/FEATURES.md` §2.C.
 
-Numeric fields (debounce ms, sleep minutes, lift-off mm scale) stay read-only
-this story unless the write-test confirms an editable scale — they are
-parameters, not toggles. Wave correction (no confirmed address) and low power
-(two candidate addresses) are expected to end up gated with defer entries
-unless the live probing resolves them.
+Numeric fields (debounce ms, sleep minutes, sensor angle, lift-off mm) were
+later human-renegotiated into **selectable sliders**: when a field's A Hub
+range/step is known (`parameters.SELECTABLE`) it renders as a Gtk.Scale, and
+a write only happens for values on that grid (`set_param_choice`, readback
+verified). Unconfirmed ones (linear_ripple, low power, wave correction) stay
+read-only/gated with defer entries unless the live probing resolves them.
 
 Toggle UI clones the RF checkboxes (Gtk.CheckButton + `_perf_loading` guard);
 per-field read errors are isolated like `read_perf_state` so one broken field
@@ -182,3 +203,57 @@ never blanks the whole tab.
   confirmed value semantics from the write-test.
 - On-device (manual): run the app, flip each confirmed toggle, confirm the state
   sticks and re-reads back; confirm unconfirmed fields are disabled.
+
+## Suggested Review Order
+
+**Slider write path**
+
+- Entry point: the drag handler coalesces per-tick writes into one verified write.
+  [`gui.py:567`](../../src/rapoo_vt7/gui.py#L567)
+
+- One-shot flush keeps the coalesced write out of the render guard.
+  [`gui.py:583`](../../src/rapoo_vt7/gui.py#L583)
+
+- Grid + range enforcement: only A Hub values ever reach the device.
+  [`parameters.py:224`](../../src/rapoo_vt7/parameters.py#L224)
+
+- Byte encoding with the same grid/range guard (`signed`, `mm` tags).
+  [`parameters.py:106`](../../src/rapoo_vt7/parameters.py#L106)
+
+**Render plan (pure function)**
+
+- Off-range/off-grid raw bytes snap to the grid or disable the slider.
+  [`gui.py:62`](../../src/rapoo_vt7/gui.py#L62)
+
+- Read-only rows are unit-less now that all units moved into SELECTABLE.
+  [`gui.py:103`](../../src/rapoo_vt7/gui.py#L103)
+
+- The declared slider ranges and byte maps (inference, P9 pending).
+  [`parameters.py:57`](../../src/rapoo_vt7/parameters.py#L57)
+
+**GUI binding + notifications**
+
+- Slider construction, tooltips, and low_power tooltip on the read-only row.
+  [`gui.py:497`](../../src/rapoo_vt7/gui.py#L497)
+
+- Re-translate on language change (slider labels + low_power tooltip).
+  [`gui.py:932`](../../src/rapoo_vt7/gui.py#L932)
+
+- Fixed `{param}` placeholder — the pre-review code raised KeyError at runtime.
+  [`main.py:379`](../../src/rapoo_vt7/main.py#L379)
+
+**Docs**
+
+- §2.C header now separates confirmed writability from inferred byte maps.
+  [`FEATURES.md:63`](../../docs/FEATURES.md#L63)
+
+- §8.B3 no longer contradicts the sliders paragraph.
+  [`CONTEXT.md:294`](../../CONTEXT.md#L294)
+
+**Tests**
+
+- Slider wiring (wake + choice), notification formatting, decode boundaries.
+  [`test_parameters.py:364`](../../tests/test_parameters.py#L364)
+
+- Render-plan grid snap, off-range disable, error value retention.
+  [`test_gui_units.py:42`](../../tests/test_gui_units.py#L42)

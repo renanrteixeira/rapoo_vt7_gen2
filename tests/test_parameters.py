@@ -335,6 +335,23 @@ class ChoiceMetadataTest(unittest.TestCase):
         self.assertEqual(par.byte_to_display("sensor_angle", 0xFE), -2)
         self.assertEqual(par.byte_to_display("sensor_angle", 30), 30)
 
+    def test_signed_angle_decode_full_span(self):
+        self.assertEqual(par.byte_to_display("sensor_angle", 0xE2), -30)
+        self.assertEqual(par.byte_to_display("sensor_angle", 0x1E), 30)
+
+    def test_lift_off_decode_boundaries(self):
+        # Below-min and above-max raw bytes decode past the A Hub range; the
+        # GUI's render plan disables the slider for those (see gui.units).
+        self.assertEqual(par.byte_to_display("lift_off", 0), 0.9)
+        self.assertEqual(par.byte_to_display("lift_off", 11), 2.0)
+        self.assertEqual(par.byte_to_display("lift_off", 12), 2.1)
+
+    def test_display_to_byte_rejects_non_numeric(self):
+        for bad in ("4", None, [4], (4,)):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    par.display_to_byte("press_debounce", bad)
+
     def test_choice_labels(self):
         self.assertEqual(par.choice_label("press_debounce", 4), "4 ms")
         self.assertEqual(par.choice_label("sleep_time", 10), "10 min")
@@ -367,6 +384,54 @@ class MainParamTest(unittest.TestCase):
         self.assertTrue(wake)  # still attempted (user action)
         with self.assertRaises(ValueError):
             fn(FakeDev(data={0x08C3: b"\x03"}))
+
+    def test_on_set_param_choice_submits_choice_with_wake(self):
+        app = self._app()
+        app._on_set_param_choice("press_debounce", 4)
+        self.assertEqual(len(app._monitor.jobs), 1)
+        fn, on_done, on_error, wake = app._monitor.jobs[0]
+        self.assertTrue(wake)
+        self.assertTrue(callable(on_done))
+        self.assertTrue(callable(on_error))
+        state = fn(FakeDev(data={0x08C0: b"\x00"}))
+        self.assertTrue(state["option"])
+        self.assertEqual(state["value"], 4)
+
+    def test_param_changed_formats_choice_option(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        app = self._app()
+        app._window = SimpleNamespace(_lang="pt_BR")
+        shown = []
+
+        def fake_new(_app, body, _icon):
+            shown.append(body)
+            return SimpleNamespace(show=lambda: None)
+
+        with patch.object(main.Notify.Notification, "new", side_effect=fake_new):
+            app._param_changed(
+                {"name": "press_debounce", "value": 4, "option": True, "raw": 4}
+            )
+        self.assertEqual(len(shown), 1)
+        self.assertIn("4 ms", shown[0])
+
+    def test_param_changed_formats_toggle_with_param_on(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        app = self._app()
+        app._window = SimpleNamespace(_lang="pt_BR")
+        shown = []
+
+        def fake_new(_app, body, _icon):
+            shown.append(body)
+            return SimpleNamespace(show=lambda: None)
+
+        with patch.object(main.Notify.Notification, "new", side_effect=fake_new):
+            app._param_changed({"name": "motion_sync", "value": True})
+        self.assertEqual(len(shown), 1)
+        self.assertIn(main.LANGS["pt_BR"]["param_on"], shown[0])
 
 
 if __name__ == "__main__":

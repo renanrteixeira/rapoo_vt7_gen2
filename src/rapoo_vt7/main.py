@@ -386,7 +386,7 @@ class RapooApp(Gtk.Application):
         Notify.Notification.new(
             "Rapoo VT7",
             lang["param_changed"].format(
-                name=lang["param_" + state["name"]],
+                param=lang["param_" + state["name"]],
                 state=shown,
             ),
             "dialog-information",

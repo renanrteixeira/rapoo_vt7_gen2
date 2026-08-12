@@ -60,7 +60,7 @@ with a **gear** system up to 7 gears.
       shows a radio per slot 125..8000 Hz with the current one marked, and
       the RF strategy is a marked radio pair Adaptative/Maximum) |
 
-### C. Mouse parameters — ✅ addresses, ✅ value semantics (confirmed 2026-08-11)
+### C. Mouse parameters — ✅ addresses + ✅ writable (write-test 2026-08-11); byte maps ⚠️ inferred (P9)
 On-device write-test per byte (read → write → re-read → restore, each byte
 restored exactly) confirmed writability + stickiness. Inputs shipped:
 **toggles** only for the bool-validated bytes, **sliders** for the numeric
