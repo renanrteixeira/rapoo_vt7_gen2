@@ -102,6 +102,8 @@ class RapooApp(Gtk.Application):
             on_set_perf=self._on_set_perf,
             on_set_rf=self._on_set_rf,
             on_set_param=self._on_set_param,
+            on_set_rate=self._on_set_rate,
+            on_set_param_choice=self._on_set_param_choice,
         )
 
         self._monitor = BatteryMonitor(
@@ -309,6 +311,28 @@ class RapooApp(Gtk.Application):
             wake=True,
         )
 
+    def _on_set_rate(self, hz):
+        """Polling-rate radio toggled: writes the rateCode of `hz` to
+        0x0880 (verified by re-reading). The active slot changes with it,
+        so the perf/RF read is re-run for the new slot."""
+        self._monitor.submit(
+            lambda dev: perf.set_rate(dev, hz),
+            on_done=lambda res: GLib.idle_add(self._rate_changed, res),
+            on_error=self._perf_error,
+            wake=True,
+        )
+
+    def _rate_changed(self, result):
+        """Runs on the GTK thread after a rate write; notifies and re-reads
+        the Desempenho state for the new active slot."""
+        lang = LANGS[self._window._lang]
+        Notify.Notification.new(
+            "Rapoo VT7",
+            lang["perf_rate_changed"].format(hz=result["hz"]),
+            "dialog-information",
+        ).show()
+        self._refresh_perf(slot=result["slot"])
+
     def _rf_changed(self, state, field):
         """Runs on the GTK thread after an RF write; refreshes the perf/RF tab."""
         lang = LANGS[self._window._lang]
@@ -341,14 +365,29 @@ class RapooApp(Gtk.Application):
             wake=True,
         )
 
+    def _on_set_param_choice(self, name, value):
+        """§C selectable parameter changed: write one of its confirmed choice
+        values, verified by re-reading (guesswork values are refused inside
+        `set_param_choice`). User-initiated: attempted even while asleep."""
+        self._monitor.submit(
+            lambda dev: parameters.set_param_choice(dev, name, value),
+            on_done=lambda res: GLib.idle_add(self._param_changed, res),
+            on_error=self._param_error,
+            wake=True,
+        )
+
     def _param_changed(self, state):
         """Runs on the GTK thread after a §C write; notifies + re-reads."""
         lang = LANGS[self._window._lang]
+        if state.get("option"):
+            shown = parameters.choice_label(state["name"], state["value"])
+        else:
+            shown = lang["param_on" if state["value"] else "param_off"]
         Notify.Notification.new(
             "Rapoo VT7",
             lang["param_changed"].format(
                 name=lang["param_" + state["name"]],
-                state=lang["param_on" if state["value"] else "param_off"],
+                state=shown,
             ),
             "dialog-information",
         ).show()
@@ -389,10 +428,16 @@ class RapooApp(Gtk.Application):
         ).show()
         self._refresh_perf()
 
-    def _refresh_perf(self):
-        """Re-reads the mode of the active rate slot into the window."""
+    def _refresh_perf(self, slot=None):
+        """Re-reads the mode of the active rate slot into the window.
 
-        slot = self._current_perf_slot()
+        `slot` is None normally (derived from report 7 `rpt_usb`); after a
+        rate change the new slot is passed explicitly so the tab updates
+        right away instead of waiting for the next passive report.
+        """
+
+        if slot is None:
+            slot = self._current_perf_slot()
 
         def done(info):
             GLib.idle_add(self._window.update_perf, info)

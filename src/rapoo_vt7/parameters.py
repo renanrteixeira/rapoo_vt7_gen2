@@ -51,6 +51,95 @@ PARAM_UNITS = {
     "sleep_time": "min",
 }
 
+# Selectable §C parameters, each with its A Hub slider range (min, max, step)
+# in the units the A Hub shows, a map tag and a unit. A parameter listed here
+# renders as a slider in the Parâmetros tab instead of a read-only row and can
+# be written via `set_param_choice` (verified by read-back).
+#
+# Map tags (byte <-> display value):
+#   "plain"  byte and display are the same number (debounce ms, sleep min)
+#   "signed" byte is a signed 8-bit value (sensor angle: -30..30 -> 0xE2..0x1E)
+#   "mm"     byte 1..11 -> 1.0..2.0 mm, step 0.1 (lift_off; the 0x01 factory
+#            read maps to the 1.0 mm minimum — the scale is inferred from the
+#            A Hub 1.0..2.0 step-0.1 range, not yet double-confirmed on-device)
+SELECTABLE = {
+    "press_debounce": (0, 32, 2, "plain", "ms"),
+    "release_debounce": (0, 32, 2, "plain", "ms"),
+    "sleep_time": (2, 120, 1, "plain", "min"),
+    "sensor_angle": (-30, 30, 1, "signed", "°"),
+    "lift_off": (1.0, 2.0, 0.1, "mm", "mm"),
+}
+
+_SIGNED_BYTE = 256
+
+
+def _range_of(name):
+    return SELECTABLE[name][:3]
+
+
+def _map_of(name):
+    return SELECTABLE[name][3]
+
+
+def is_selectable(name):
+    """True if a §C parameter is editable through a slider."""
+    return name in SELECTABLE
+
+
+def param_range(name):
+    """(min, max, step) of a selectable §C parameter in display units."""
+    return _range_of(name)
+
+
+def param_unit(name):
+    """Unit suffix of a selectable §C parameter ("" if none)."""
+    return SELECTABLE[name][4]
+
+
+def param_digits(name):
+    """Decimal places of a selectable §C parameter's display value."""
+    return 1 if _map_of(name) == "mm" else 0
+
+
+def byte_to_display(name, b):
+    """Converts a raw byte read to the selectable parameter's display value."""
+    tag = _map_of(name)
+    if tag == "signed":
+        return b - _SIGNED_BYTE if b > 127 else b
+    if tag == "mm":
+        return 1.0 + (b - 1) * 0.1
+    return b
+
+
+def display_to_byte(name, value):
+    """Converts a selectable parameter's display value to the raw byte.
+
+    Raises ValueError when the value is outside the parameter's range or not
+    on its step grid — anything else would be guesswork on the device.
+    """
+    lo, hi, step = _range_of(name)
+    if not isinstance(value, (int, float)):
+        raise ValueError("value %r is not numeric" % (value,))
+    if value < lo or value > hi:
+        raise ValueError("value %r out of range %s..%s" % (value, lo, hi))
+    grid = round((value - lo) / step)
+    if abs((value - lo) - grid * step) > 1e-9:
+        raise ValueError("value %r not on the %s grid" % (value, step))
+    tag = _map_of(name)
+    if tag == "signed":
+        return int(value) & 0xFF
+    if tag == "mm":
+        return int(round((value - 1.0) / 0.1)) + 1
+    return int(value)
+
+
+def choice_label(name, value):
+    """Display text of a selectable §C value (scaled as the A Hub shows it)."""
+    digits = param_digits(name)
+    number = "%.*f" % (digits, float(value))
+    unit = param_unit(name)
+    return "%s %s" % (number, unit) if unit else number
+
 
 def _addr(offset):
     return tuple(protocol.eeprom_bank0(offset))
@@ -137,4 +226,33 @@ def set_param(dev, name, enabled):
         "raw": value,
         "value": bool(value),
         "editable": True,
+    }
+
+
+def set_param_choice(dev, name, value):
+    """Sets a selectable §C parameter to a display value on its A Hub range,
+    verified by re-reading (a mismatch rejects the change).
+
+    The byte is derived from the display value by `display_to_byte`, which
+    refuses anything off the parameter's range/grid — guesswork is never
+    written.
+    """
+    if name not in _PARAM_BY_NAME:
+        raise KeyError(name)
+    if name not in SELECTABLE:
+        raise ValueError("parameter %s has no selectable options" % name)
+    value = display_to_byte(name, value)
+    if isinstance(value, float):
+        value = int(value)
+    offset, _editable = _PARAM_BY_NAME[name]
+    raw = dev.write_eeprom_verify(_addr(offset), bytes((value,)))
+    if len(raw) != 1 or raw[0] != value:
+        raise ValueError("§C write not verified (read back %r)" % (list(raw),))
+    return {
+        "name": name,
+        "addr": param_addr(name),
+        "raw": value,
+        "value": byte_to_display(name, value),
+        "editable": True,
+        "option": True,
     }

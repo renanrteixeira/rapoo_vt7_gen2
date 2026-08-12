@@ -297,6 +297,14 @@ captured before any write.
       bytes read→write→re-read→restore); the rest are read-only state
       (linear_ripple numeric 0..3, debounce ms, sleep min, lift-off, sensor
       angle, low_power/power_save unresolved, wave correction no address).
+      **Polling-rate UI + RF radios DONE (2026-08-11)**: `performance.set_rate`
+      writes the rateCode of a RATE_HZ value to `0x0880` + readback verify;
+      the Desempenho tab shows a **radio per slot (125..8000 Hz)** with the
+      current one always marked (from report 7 `rpt_usb`), and the **RF
+      strategy is a radio pair "RF adaptativo | RF máximo"** with the current
+      one marked (0x08D8 read state) instead of the ambiguous single checkbox.
+      Pure render decisions (`perf_rate_state`/`rf_radio_state`) tested
+      headlessly (`tests/test_gui_units.py`).
       **Story 8 (params UX) DONE**: toggles validate
       strictly (0/1), last-known values retained on error, multiple broken
       bytes aggregate in the status line (`+N more`), read-only rows show
@@ -304,6 +312,24 @@ captured before any write.
       tooltip (125 Hz link), labels/tooltips re-translate on language
       change; render decisions are pure functions (`params_render_plan`/
       `params_status_text`) tested headlessly (`tests/test_gui_units.py`).
+      **Selectable params (sliders) DONE (2026-08-12)**: the §C numeric
+      parameters whose A Hub range is known now render as **Gtk.Scale
+      sliders** instead of read-only rows — press/release debounce 0–32 ms
+      (step 2, byte = ms), sleep time 2–120 min (byte = min), sensor angle
+      −30°..30° (signed byte), lift-off 1.0–2.0 mm (byte 1..11 ↔ 1.0..2.0,
+      factory 0x01 = 1.0 mm). Written via `parameters.set_param_choice`
+      (value must be on the A Hub grid, `display_to_byte` encodes, readback
+      verifies; refused off-grid/off-range), slider value from report-driven
+      reads via `byte_to_display`, last-known retained on error. Sources:
+      `docs/enc.data.json` (VT7 product config, key 17939 — lift-off range +
+      `enableGlassTracking:false`/`dcSwitch:false`; receiver map
+      `docs/enc-map.data.json` `5139→17939`) and `docs/rapoo_hub_perf.js`
+      (rate list + `PERF_SELECTABLE` — matches ours byte-for-byte; mode cards
+      `id:5..0` → names already reversed correctly). **A Hub hides Glass/DC
+      for the VT7 but we keep both toggles** (bytes writable/sticky on
+      hardware; difference annotated in FEATURES.md §2.C). Debounce/sleep/
+      angle byte maps are our inference (defaults agree); definitive = diff
+      an A Hub write (P9).
 - [ ] **B4** Button remap (extract function codes from the bundle)
 - [ ] **B5** System: factory reset, device name, receiver pairing
 

@@ -1,4 +1,5 @@
 import math
+import os
 import time
 
 import cairo
@@ -6,9 +7,46 @@ import cairo
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import GLib, Gtk
+gi.require_version("Gdk", "3.0")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import GLib, Gtk, Gdk, GdkPixbuf
 
 from . import dpi, i18n, parameters, performance as perf
+
+# Product render shown in the battery tab. Resolved relative to this package
+# (repo layout: <root>/assets/mouse2.png) so it also works from an install.
+_MOUSE_IMAGE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "assets",
+    "mouse2.png",
+)
+_mouse_pixbuf_cache = None  # None = not tried yet, False = load failed
+
+
+def _mouse_pixbuf():
+    """Lazy-loads the battery-tab mouse image (False cached on failure)."""
+    global _mouse_pixbuf_cache
+    if _mouse_pixbuf_cache is None:
+        try:
+            _mouse_pixbuf_cache = GdkPixbuf.Pixbuf.new_from_file(_MOUSE_IMAGE_PATH)
+        except Exception:
+            _mouse_pixbuf_cache = False
+    return _mouse_pixbuf_cache if _mouse_pixbuf_cache is not False else None
+
+
+def _draw_image_fit(cr, pb, w, h, pad=16):
+    """Draws `pb` centered, scaled to fit (aspect preserved), with padding."""
+    iw, ih = pb.get_width(), pb.get_height()
+    if not iw or not ih:
+        return
+    box_w = max(w - 2 * pad, 1)
+    box_h = max(h - 2 * pad, 1)
+    scale = min(box_w / iw, box_h / ih)
+    sw = max(int(iw * scale), 1)
+    sh = max(int(ih * scale), 1)
+    scaled = pb.scale_simple(sw, sh, GdkPixbuf.InterpType.BILINEAR)
+    Gdk.cairo_set_source_pixbuf(cr, scaled, (w - sw) / 2, (h - sh) / 2)
+    cr.paint()
 
 
 def _round_rect(ctx, x, y, w, h, r):
@@ -25,40 +63,33 @@ def params_render_plan(info, error):
     """Pure §C widget-state plan (no GTK, headless-testable).
 
     `info` is a `parameters.read_section` payload (or None) and `error` a
-    section-level error string (or None). Returns (checks, read_onlys) where
-    `checks` maps toggle name -> (active, sensitive) and `read_onlys` maps
-    state-row name -> display text. On error the last-known values are
-    retained (never nulled) and every toggle is disabled.
+    section-level error string (or None). Returns (checks, selects,
+    read_onlys) where `checks` maps toggle name -> (active, sensitive),
+    `selects` maps selectable-combo name -> (active index or None, sensitive)
+    and `read_onlys` maps state-row name -> display text. On error the
+    last-known values are retained (never nulled) and every input is disabled.
     """
     checks = {}
+    selects = {}
     read_onlys = {}
-    if error is not None:
-        known = info.get("params", {}) if info else {}
-        for name, _o, editable in parameters.PARAMS:
-            p = known.get(name)
-            if editable:
-                checks[name] = (bool(p["raw"]) if p else False, False)
-            else:
-                read_onlys[name] = _param_state_text(name, p)
-        return checks, read_onlys
-    if info is None:
-        for name, _o, editable in parameters.PARAMS:
-            if editable:
-                checks[name] = (False, False)
-            else:
-                read_onlys[name] = "--"
-        return checks, read_onlys
-    known = info.get("params", {})
+    known = info.get("params", {}) if info else {}
     for name, _o, editable in parameters.PARAMS:
         p = known.get(name)
         if editable:
-            if p is None:
-                checks[name] = (False, False)
-            else:
-                checks[name] = (p["value"], True)
+            checks[name] = (
+                (bool(p["raw"]) if p else False),
+                error is None and p is not None,
+            )
+        elif parameters.is_selectable(name):
+            display = parameters.byte_to_display(name, p["raw"]) if p else None
+            if display is not None:
+                lo, hi, _step = parameters.param_range(name)
+                if not (lo - 1e-9 <= display <= hi + 1e-9):
+                    display = None
+            selects[name] = (display, error is None and p is not None)
         else:
             read_onlys[name] = _param_state_text(name, p)
-    return checks, read_onlys
+    return checks, selects, read_onlys
 
 
 def _param_state_text(name, p):
@@ -86,6 +117,39 @@ def params_status_text(t, info, error):
             line += t("param_more_errors").format(n=extra)
         return line, True
     return "", False
+
+
+def perf_rate_state(info, error):
+    """Pure polling-rate radio plan: (active_slot_or_None, sensitive).
+
+    On a tab-level error the radios are disabled but the last known rate
+    stays marked (`info` is retained, never nulled — same policy as the §C
+    toggles). No data -> nothing marked, radios disabled.
+    """
+    if error is not None:
+        slot = info.get("slot") if info else None
+        return slot, False
+    if info is None:
+        return None, False
+    return info["slot"], True
+
+
+def rf_radio_state(info, error, rf_error):
+    """Pure RF radio plan: (strengthen_active_or_None, sensitive).
+
+    The currently-set strategy is always the marked radio (None = adaptive,
+    True = maximum RF). Tab-level and isolated RF-read errors disable the
+    pair; the last-known state is kept marked when available.
+    """
+    if error is not None:
+        rf = info.get("rf") if info else None
+        return (bool(rf["rf_strengthen_switch"]) if rf else None), False
+    if info is None:
+        return None, False
+    rf = info.get("rf")
+    if rf_error is not None or rf is None:
+        return (bool(rf["rf_strengthen_switch"]) if rf else None), False
+    return bool(rf["rf_strengthen_switch"]), True
 
 
 def draw_mouse(ctx, w, h):
@@ -185,6 +249,8 @@ class BatteryWindow:
         on_set_perf=None,
         on_set_rf=None,
         on_set_param=None,
+        on_set_rate=None,
+        on_set_param_choice=None,
     ):
         self._lang = lang if lang in i18n.LANGS else "pt_BR"
         self._on_lang_change = on_lang_change
@@ -195,6 +261,8 @@ class BatteryWindow:
         self._on_set_perf = on_set_perf
         self._on_set_rf = on_set_rf
         self._on_set_param = on_set_param
+        self._on_set_rate = on_set_rate
+        self._on_set_param_choice = on_set_param_choice
         self._known = False
         self._asleep = False
         self._last = None
@@ -206,6 +274,7 @@ class BatteryWindow:
         self._perf_error = None
         self._perf_loading = False
         self._perf_radio = []
+        self._rate_radio = []
         self._params = None
         self._params_error = None
 
@@ -272,14 +341,29 @@ class BatteryWindow:
 
         self._build_dpi_section(page2)
 
+        page3_scroll = Gtk.ScrolledWindow()
+        page3_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         page3 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         page3.set_margin_top(16)
         page3.set_margin_bottom(16)
         page3.set_margin_start(16)
         page3.set_margin_end(16)
+        page3_scroll.add(page3)
         self._tab_perf = Gtk.Label(label=self._t("tab_perf"))
-        self._notebook.append_page(page3, self._tab_perf)
+        self._notebook.append_page(page3_scroll, self._tab_perf)
         self._build_perf_section(page3)
+
+        page4_scroll = Gtk.ScrolledWindow()
+        page4_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page4 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        page4.set_margin_top(16)
+        page4.set_margin_bottom(16)
+        page4.set_margin_start(16)
+        page4.set_margin_end(16)
+        page4_scroll.add(page4)
+        self._tab_params = Gtk.Label(label=self._t("tab_params"))
+        self._notebook.append_page(page4_scroll, self._tab_params)
+        self._build_params_section(page4)
         self._render()
 
     def _t(self, key):
@@ -343,8 +427,36 @@ class BatteryWindow:
             self._perf_radio.append(radio)
             self._perf_box.pack_start(radio, False, False, 0)
 
+        # Polling rate: a radio per slot (125..8000 Hz); the radio of the
+        # currently-set rate is always the marked one (report 7 rpt_usb /
+        # 0x0880 -> slot). Changing it writes the rateCode to MOUSE_REPORT.
+        self._rate_title = Gtk.Label()
+        self._rate_title.set_markup(
+            "<b>%s</b>" % GLib.markup_escape_text(self._t("perf_rate_section"))
+        )
+        self._rate_title.set_halign(Gtk.Align.CENTER)
+        self._rate_title.set_margin_top(8)
+        vbox.pack_start(self._rate_title, False, False, 0)
+
+        self._rate_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._rate_box.set_margin_top(4)
+        vbox.pack_start(self._rate_box, False, False, 0)
+
+        group = None
+        for i, hz in enumerate(perf.RATE_HZ):
+            radio = Gtk.RadioButton.new_with_label_from_widget(
+                group, "%d Hz" % hz
+            )
+            radio.set_active(False)
+            radio.connect("toggled", self._on_rate_toggled, hz)
+            group = radio
+            self._rate_radio.append(radio)
+            self._rate_box.pack_start(radio, False, False, 0)
+
         # RF strategy + low-battery warning: shared byte 0x08D8 (state +
-        # masked-write toggles; unrelated bits are preserved on write).
+        # masked-write toggles; unrelated bits are preserved on write). The RF
+        # strategy is a radio pair (Adaptive | Maximum) with the current one
+        # always marked; the warning stays an on/off checkbox.
         self._rf_title = Gtk.Label()
         self._rf_title.set_markup(
             "<b>%s</b>" % GLib.markup_escape_text(self._t("rf_section"))
@@ -358,16 +470,24 @@ class BatteryWindow:
         self._rf_status.set_line_wrap(True)
         vbox.pack_start(self._rf_status, False, False, 2)
 
-        self._rf_full = Gtk.CheckButton(label=self._t("rf_full_toggle"))
-        self._rf_full.set_active(False)
-        self._rf_full.connect("toggled", self._on_rf_toggled, "rf")
-        vbox.pack_start(self._rf_full, False, False, 0)
+        self._rf_radio = []
+        group = None
+        for active_full, key in ((False, "rf_radio_adaptive"), (True, "rf_radio_full")):
+            radio = Gtk.RadioButton.new_with_label_from_widget(
+                group, self._t(key)
+            )
+            radio.set_active(False)
+            radio.connect("toggled", self._on_rf_toggled)
+            group = radio
+            self._rf_radio.append(radio)
+            vbox.pack_start(radio, False, False, 0)
 
         self._rf_lowpow = Gtk.CheckButton(label=self._t("rf_low_toggle"))
         self._rf_lowpow.set_active(False)
-        self._rf_lowpow.connect("toggled", self._on_rf_toggled, "lowpow")
+        self._rf_lowpow.connect("toggled", self._on_rf_low_toggled)
         vbox.pack_start(self._rf_lowpow, False, False, 0)
 
+    def _build_params_section(self, vbox):
         # Section C mouse parameters: a checkbox per CONFIRMED toggle (motion
         # sync, glass tracking, DC switch — validated on the device) and a
         # read-only state row for the numeric/unconfirmed bytes (parameters,
@@ -377,7 +497,6 @@ class BatteryWindow:
             "<b>%s</b>" % GLib.markup_escape_text(self._t("param_section"))
         )
         self._param_title.set_halign(Gtk.Align.CENTER)
-        self._param_title.set_margin_top(8)
         vbox.pack_start(self._param_title, False, False, 0)
 
         self._param_status = Gtk.Label()
@@ -389,6 +508,7 @@ class BatteryWindow:
         self._param_box.set_margin_top(4)
         self._param_check = {}
         self._param_state = {}
+        self._param_readonly = set()
         for name, _offset, editable in parameters.PARAMS:
             if editable:
                 cb = Gtk.CheckButton(label=self._t("param_" + name))
@@ -402,20 +522,33 @@ class BatteryWindow:
                 row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
                 lbl = Gtk.Label(label=self._t("param_" + name))
                 lbl.set_halign(Gtk.Align.START)
-                value = Gtk.Label()
-                value.set_halign(Gtk.Align.END)
-                value.set_tooltip_text(self._t("param_read_only"))
+                if parameters.is_selectable(name):
+                    lo, hi, step = parameters.param_range(name)
+                    scale = Gtk.Scale.new_with_range(
+                        Gtk.Orientation.HORIZONTAL, lo, hi, step
+                    )
+                    scale.set_digits(parameters.param_digits(name))
+                    scale.set_draw_value(True)
+                    scale.set_value_pos(Gtk.PositionType.RIGHT)
+                    scale.set_size_request(140, -1)
+                    scale.set_hexpand(True)
+                    scale.set_tooltip_text(
+                        parameters.choice_label(name, lo)
+                        + " \u2013 "
+                        + parameters.choice_label(name, hi)
+                    )
+                    scale.connect("value-changed", self._on_param_scale, name)
+                    widget = scale
+                else:
+                    widget = Gtk.Label()
+                    widget.set_halign(Gtk.Align.END)
+                    widget.set_tooltip_text(self._t("param_read_only"))
+                    self._param_readonly.add(name)
                 row.pack_start(lbl, True, True, 0)
-                row.pack_start(value, False, False, 0)
-                self._param_state[name] = (lbl, value)
+                row.pack_start(widget, False, False, 0)
+                self._param_state[name] = (lbl, widget)
                 self._param_box.pack_start(row, False, False, 0)
-        self._param_scroll = Gtk.ScrolledWindow()
-        self._param_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self._param_scroll.set_propagate_natural_height(True)
-        self._param_scroll.set_max_content_height(220)
-        self._param_scroll.add(self._param_box)
-        self._param_scroll.set_margin_top(4)
-        vbox.pack_start(self._param_scroll, True, True, 0)
+        vbox.pack_start(self._param_box, False, False, 0)
 
     def _on_param_toggled(self, btn, name):
         if self._perf_loading:
@@ -423,11 +556,29 @@ class BatteryWindow:
         if self._on_set_param:
             self._on_set_param(name, btn.get_active())
 
-    def _on_rf_toggled(self, btn, field):
+    def _on_param_scale(self, scale, name):
+        if self._perf_loading:
+            return
+        if self._on_set_param_choice:
+            self._on_set_param_choice(name, scale.get_value())
+
+    def _on_rate_toggled(self, btn, hz):
+        if self._perf_loading:
+            return
+        if btn.get_active() and self._on_set_rate:
+            self._on_set_rate(hz)
+
+    def _on_rf_toggled(self, *args):
         if self._perf_loading:
             return
         if self._on_set_rf:
-            self._on_set_rf(field, btn.get_active())
+            self._on_set_rf("rf", self._rf_radio[1].get_active())
+
+    def _on_rf_low_toggled(self, btn):
+        if self._perf_loading:
+            return
+        if self._on_set_rf:
+            self._on_set_rf("lowpow", btn.get_active())
 
     def update_perf(self, info):
         self._perf = info
@@ -481,15 +632,19 @@ class BatteryWindow:
                 else:
                     radio.set_sensitive(False)
 
+            rate_active, rate_sensitive = perf_rate_state(self._perf, self._perf_error)
+            for i, radio in enumerate(self._rate_radio):
+                radio.set_active(rate_active is not None and i == rate_active)
+                radio.set_sensitive(rate_sensitive)
+
             rf = self._perf.get("rf") if self._perf else None
             rf_error = self._perf.get("rf_error") if self._perf else None
+            rf_active, rf_sensitive = rf_radio_state(
+                self._perf, self._perf_error, rf_error
+            )
             if self._perf_error is not None:
                 # Tab-level error (mode read failed): the whole section is out.
                 self._rf_status.set_text("")
-                self._rf_full.set_active(False)
-                self._rf_lowpow.set_active(False)
-                self._rf_full.set_sensitive(False)
-                self._rf_lowpow.set_sensitive(False)
             elif rf_error is not None or rf is None:
                 # Isolated RF-read error: only the RF widgets are disabled, the
                 # mode radios above stay functional.
@@ -499,10 +654,6 @@ class BatteryWindow:
                         self._t("rf_error").format(error=rf_error or "?")
                     )
                 )
-                self._rf_full.set_active(False)
-                self._rf_lowpow.set_active(False)
-                self._rf_full.set_sensitive(False)
-                self._rf_lowpow.set_sensitive(False)
             else:
                 self._rf_status.set_text(
                     self._t("rf_status").format(
@@ -514,14 +665,19 @@ class BatteryWindow:
                         else self._t("rf_low_off"),
                     )
                 )
-                self._rf_full.set_active(rf["rf_strengthen_switch"])
-                self._rf_lowpow.set_active(rf["low_power_warn_switch"])
-                self._rf_full.set_sensitive(True)
-                self._rf_lowpow.set_sensitive(True)
+            for i, radio in enumerate(self._rf_radio):
+                radio.set_active(rf_active is not None and i == int(rf_active))
+                radio.set_sensitive(rf_sensitive)
+            self._rf_lowpow.set_active(
+                rf is not None and rf_error is None and rf["low_power_warn_switch"]
+            )
+            self._rf_lowpow.set_sensitive(
+                self._perf_error is None and rf_error is None and rf is not None
+            )
 
             # Section C mouse parameters (independent of mode/RF: isolated
             # errors; last known values are retained, never nulled).
-            checks, read_onlys = params_render_plan(self._params, self._params_error)
+            checks, selects, read_onlys = params_render_plan(self._params, self._params_error)
             text, is_error = params_status_text(self._t, self._params, self._params_error)
             if is_error:
                 self._param_status.set_markup(
@@ -532,6 +688,11 @@ class BatteryWindow:
             for name, (active, sensitive) in checks.items():
                 self._param_check[name].set_active(active)
                 self._param_check[name].set_sensitive(sensitive)
+            for name, (active, sensitive) in selects.items():
+                scale = self._param_state[name][1]
+                if active is not None and abs(scale.get_value() - active) > 1e-9:
+                    scale.set_value(active)
+                scale.set_sensitive(sensitive)
             for name, text_value in read_onlys.items():
                 self._param_state[name][1].set_text(text_value)
         finally:
@@ -735,7 +896,11 @@ class BatteryWindow:
         cr.set_source_rgba(0, 0, 0, 0.08)
         cr.set_line_width(1.0)
         cr.stroke()
-        draw_mouse(cr, w, h)
+        pb = _mouse_pixbuf()
+        if pb is not None:
+            _draw_image_fit(cr, pb, w, h)
+        else:
+            draw_mouse(cr, w, h)
         return False
 
     def _on_lang_changed(self, combo):
@@ -746,6 +911,8 @@ class BatteryWindow:
             self._lang_label.set_text(self._t("language_label"))
             self._tab_battery.set_text(self._t("tab_battery"))
             self._tab_dpi.set_text(self._t("tab_dpi"))
+            self._tab_perf.set_text(self._t("tab_perf"))
+            self._tab_params.set_text(self._t("tab_params"))
             self._dpi_title.set_markup(
                 "<b>%s</b>" % GLib.markup_escape_text(self._t("dpi_section"))
             )
@@ -756,7 +923,14 @@ class BatteryWindow:
             self._rf_title.set_markup(
                 "<b>%s</b>" % GLib.markup_escape_text(self._t("rf_section"))
             )
-            self._rf_full.set_label(self._t("rf_full_toggle"))
+            self._rate_title.set_markup(
+                "<b>%s</b>"
+                % GLib.markup_escape_text(self._t("perf_rate_section"))
+            )
+            for i, radio in enumerate(self._rate_radio):
+                radio.set_label("%d Hz" % perf.RATE_HZ[i])
+            self._rf_radio[0].set_label(self._t("rf_radio_adaptive"))
+            self._rf_radio[1].set_label(self._t("rf_radio_full"))
             self._rf_lowpow.set_label(self._t("rf_low_toggle"))
             self._param_title.set_markup(
                 "<b>%s</b>" % GLib.markup_escape_text(self._t("param_section"))
@@ -767,7 +941,8 @@ class BatteryWindow:
                     cb.set_tooltip_text(self._t("param_low_power_tt"))
             for name, (lbl, val) in self._param_state.items():
                 lbl.set_text(self._t("param_" + name))
-                val.set_tooltip_text(self._t("param_read_only"))
+                if name in self._param_readonly:
+                    val.set_tooltip_text(self._t("param_read_only"))
             self._render()
             self._render_dpi_widgets()
             self._render_perf()

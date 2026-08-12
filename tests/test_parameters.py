@@ -242,6 +242,106 @@ class SetParamTest(unittest.TestCase):
         self.assertEqual(dev.writes, [])
 
 
+class SetParamChoiceTest(unittest.TestCase):
+    def test_writes_choice_and_verifies(self):
+        dev = FakeDev(data={0x08C0: b"\x00"})
+        res = par.set_param_choice(dev, "press_debounce", 4)
+        self.assertEqual(dev.writes, [(0x08C0, b"\x04")])
+        self.assertEqual(res["raw"], 4)
+        self.assertEqual(res["value"], 4)
+        self.assertTrue(res["option"])
+
+    def test_encodes_signed_angle(self):
+        dev = FakeDev(data={0x08C4: b"\x00"})
+        res = par.set_param_choice(dev, "sensor_angle", -2)
+        self.assertEqual(dev.writes[-1], (0x08C4, b"\xFE"))
+        self.assertEqual(res["value"], -2)
+
+    def test_encodes_lift_off_mm(self):
+        dev = FakeDev(data={0x0884: b"\x01"})
+        res = par.set_param_choice(dev, "lift_off", 1.5)
+        self.assertEqual(dev.writes, [(0x0884, b"\x06")])
+        self.assertEqual(res["value"], 1.5)
+
+    def test_refuses_value_off_grid(self):
+        dev = FakeDev(data={0x08C0: b"\x00"})
+        with self.assertRaises(ValueError):
+            par.set_param_choice(dev, "press_debounce", 7)
+        self.assertEqual(dev.writes, [])
+
+    def test_refuses_value_out_of_range(self):
+        dev = FakeDev(data={0x08C2: b"\x02"})
+        with self.assertRaises(ValueError):
+            par.set_param_choice(dev, "sleep_time", 150)
+        self.assertEqual(dev.writes, [])
+
+    def test_refuses_param_without_options(self):
+        dev = FakeDev(data={0x08C3: b"\x03"})
+        with self.assertRaises(ValueError):
+            par.set_param_choice(dev, "linear_ripple", 3)
+        self.assertEqual(dev.writes, [])
+
+    def test_verify_mismatch_raises(self):
+        dev = NoVerifyDev()
+        with self.assertRaises(ValueError):
+            par.set_param_choice(dev, "press_debounce", 2)
+
+    def test_unknown_name_raises(self):
+        dev = FakeDev()
+        with self.assertRaises(KeyError):
+            par.set_param_choice(dev, "nope", 1)
+        self.assertEqual(dev.writes, [])
+
+
+class ChoiceMetadataTest(unittest.TestCase):
+    def test_selectable_fields_declared(self):
+        self.assertTrue(par.is_selectable("press_debounce"))
+        self.assertTrue(par.is_selectable("release_debounce"))
+        self.assertTrue(par.is_selectable("sleep_time"))
+        self.assertTrue(par.is_selectable("sensor_angle"))
+        self.assertTrue(par.is_selectable("lift_off"))
+        self.assertFalse(par.is_selectable("linear_ripple"))
+        self.assertFalse(par.is_selectable("low_power"))
+
+    def test_ranges_match_a_hub(self):
+        self.assertEqual(par.param_range("press_debounce"), (0, 32, 2))
+        self.assertEqual(par.param_range("release_debounce"), (0, 32, 2))
+        self.assertEqual(par.param_range("sleep_time"), (2, 120, 1))
+        self.assertEqual(par.param_range("sensor_angle"), (-30, 30, 1))
+        self.assertEqual(par.param_range("lift_off"), (1.0, 2.0, 0.1))
+
+    def test_byte_round_trip(self):
+        for name in ("press_debounce", "release_debounce", "sleep_time"):
+            lo, hi, step = par.param_range(name)
+            for v in range(lo, hi + 1, step):
+                with self.subTest(param=name, value=v):
+                    self.assertEqual(
+                        par.byte_to_display(name, par.display_to_byte(name, v)),
+                        v,
+                    )
+        for v in (-30, 0, 7, 30):
+            self.assertEqual(
+                par.byte_to_display("sensor_angle", par.display_to_byte("sensor_angle", v)),
+                v,
+            )
+        for v in (1.0, 1.5, 2.0):
+            self.assertEqual(
+                par.byte_to_display("lift_off", par.display_to_byte("lift_off", v)),
+                v,
+            )
+
+    def test_angle_signed_decode(self):
+        self.assertEqual(par.byte_to_display("sensor_angle", 0), 0)
+        self.assertEqual(par.byte_to_display("sensor_angle", 0xFE), -2)
+        self.assertEqual(par.byte_to_display("sensor_angle", 30), 30)
+
+    def test_choice_labels(self):
+        self.assertEqual(par.choice_label("press_debounce", 4), "4 ms")
+        self.assertEqual(par.choice_label("sleep_time", 10), "10 min")
+        self.assertEqual(par.choice_label("lift_off", 1.5), "1.5 mm")
+        self.assertEqual(par.choice_label("sensor_angle", 0), "0 °")
+
+
 class MainParamTest(unittest.TestCase):
     def _app(self):
         app = main.RapooApp.__new__(main.RapooApp)

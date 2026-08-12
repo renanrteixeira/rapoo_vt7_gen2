@@ -54,25 +54,44 @@ with a **gear** system up to 7 gears.
 | Performance mode | `0x08DC` (+6 bytes) | `SENSOR_MODE` `_3(732)` — a **7-slot table** starting at `0x08DC`, one byte per polling-rate index (0=125Hz … 6=8000Hz); value = **mode id 0..5**. ⚠️ id→name is REVERSED vs the A Hub UI card order (bundle `MousePerformanceUtil`: the `mode_0_*` card has `id:5`): **0 Office, 1 Balance (Low Power), 2 Fire (High Performance), 3 Hyper core, 4 Gaming hyper core, 5 Fury gaming** (Corded). "Set mode" writes 1 byte at `0x08DC + rate_index`; read mode reads that slot (A Hub write primitive `x0` = one `0xA5` len-1 write). **✅ VALIDATED ON DEVICE (2026-08-11)**: factory table `[0,0,1,1,3,3,3]` read; write+readback at slot 3 (1→4→1) restored OK; rate change (`0x0880`=8) mirrored in report 7 `rpt_usb` (8) — `rpt_usb` IS the rateCode, `rpt_24g` is not. Slot for the active rate comes from `rpt_usb` (or `0x0880`). A Hub selectable per slot: `{0:[0,1],1:[0,1],2:[0,1,2],3:[1,2,3,4,5],4:[2,3,4,5],5:[3,4,5],6:[3,4,5]}` |
 | Internal sensor parameters | `0x0880` `0x0881` `0x0884` `0x0885` | `MOUSE_REPORT`/`MOUSE_SCAN`/`MOUSE_SLIGHT`/`MOUSE_MOTION` — **1B ✅**; change together with the mode; ⚠️ do not edit directly without understanding |
 | RF strategy | `0x08D8` | `RF_STRENGTHEN_SWITCH` (smart / full RF). **Shared byte ✅ (read)**: shares one byte with `LOW_POWE_WARN_SWITCH` (read 0x00 = bits 00000000) — a bit mask; per-field writes must use masked values. **Bit layout ⚠️ working hypothesis** (`protocol.RF_STRENGTHEN_MASK`/`LOW_POWE_WARN_MASK`): bit 0 = RF strengthen (0 Adaptive, 1 Maximum RF), bit 1 = low-battery light warning (0 off, 1 on) — not yet confirmed by a device write-diff. Any write must preserve the unrelated bits and be verified by re-reading the whole byte. Implemented + unit-tested in `performance.py` (`read_rf`/`write_rf_strengthen`/`write_low_power_warn`) and exposed in the Desempenho tab (state + toggles) — story 3-2 |
-| Polling rate (回报率) | `0x0880` | `MOUSE_REPORT` (the byte IS the **rateCode**): 125→8, 250→4, 500→2, 1000→1, 2000→132, 4000→130, 8000→129 (A Hub `u` list). **Slots 0..6 map to those codes in order** (`performance.RATE_INDEX_BY_CODE`/`rate_hz`): slot 0=125, 1=250, 2=500, 3=1000, 4=2000, 5=4000, 6=8000 Hz. Passive: report 7 `data[11]`=rpt_usb mirrors `0x0880` (**validated**: writing 0x0880=8 → rpt_usb=8; restore → back; the A Hub rate-change listener matches `rateCode === rpt_usb`); `data[10]`=rpt_24g is NOT a rate code (observed constant) and is ignored. `performance.rate_index_from_code` maps the code to the slot 0..6. Changing the rate is story 6 |
+| Polling rate (回报率) | `0x0880` | `MOUSE_REPORT` (the byte IS the **rateCode**): 125→8, 250→4, 500→2, 1000→1, 2000→132, 4000→130, 8000→129 (A Hub `u` list). **Slots 0..6 map to those codes in order** (`performance.RATE_INDEX_BY_CODE`/`rate_hz`): slot 0=125, 1=250, 2=500, 3=1000, 4=2000, 5=4000, 6=8000 Hz. Passive: report 7 `data[11]`=rpt_usb mirrors `0x0880` (**validated**: writing 0x0880=8 → rpt_usb=8; restore → back; the A Hub rate-change listener matches `rateCode === rpt_usb`); `data[10]`=rpt_24g is NOT a rate code (observed constant) and is ignored. `performance.rate_index_from_code` maps the code to the slot 0..6.
+      **Changing the rate is implemented** (`performance.set_rate(dev, hz)`:
+      writes the rateCode to `0x0880` + readback verify; the Desempenho tab
+      shows a radio per slot 125..8000 Hz with the current one marked, and
+      the RF strategy is a marked radio pair Adaptative/Maximum) |
 
 ### C. Mouse parameters — ✅ addresses, ✅ value semantics (confirmed 2026-08-11)
 On-device write-test per byte (read → write → re-read → restore, each byte
-restored exactly) confirmed writability + stickiness. **Toggles shipped only
-for the bool-validated bytes**; numeric/unconfirmed bytes are read-only state:
-| Item | EEPROM | Notes |
+restored exactly) confirmed writability + stickiness. Inputs shipped:
+**toggles** only for the bool-validated bytes, **sliders** for the numeric
+bytes whose A Hub range is known, read-only rows for the rest. Every write is
+verified by re-reading (mismatch rejects) and only values on the A Hub grid
+are written (`set_param_choice`; user-initiated, `wake=True`):
+| Item | EEPROM | Input |
 |---|---|---|
-| Motion sync (移动同步) | `0x0885` | `MOUSE_MOTION` — **1B bool ✅ (toggle)**: reads 0x01 (on); write 0/1 sticks + verifies |
-| Linear correction (直线修正) | `0x08C3` | `MOUSE_LINEAR_RIPPLE` — **1B ✅**, **numeric (0..3, not bool)**: reads 0x03, all values stick → **read-only state** |
-| Wave correction (波浪修正) | ⚠️ | no confirmed address (candidate `MOUSE_SENSORANGLE` or a dedicated field) — **not exposed, defer entry**. A Hub `rippleCorrection`/`waveformCorrection` names exist but no §C address is bound |
-| Sensor angle | `0x08C4` | `MOUSE_SENSORANGLE` — **1B ✅**, numeric/manual setting, **scale unconfirmed** → read-only state (reads 0x00) |
-| Glass tracking (追踪玻璃) | `0x08C5` | `MOUSE_GLASS` — **1B bool ✅ (toggle)**: reads 0x00 (off); product `enableGlassTracking: true`; write 0/1 sticks + verifies |
-| Press debounce | `0x08C0` | `MOUSE_DOWNDELAY` — **1B ✅ numeric (ms scale)** → read-only state (reads 0x02) |
-| Release debounce | `0x08C1` | `MOUSE_LIFTDELAY` — **1B ✅ numeric (ms scale)** → read-only state (reads 0x02) |
-| Lift-off height | `0x0884` | `MOUSE_SLIGHT` — **1B ✅ numeric (product 1.0–2.0 step 0.1, scale unconfirmed)** → read-only state (reads 0x01) |
-| DC switch | `0x08DA` | `MOUSE_DCSWITCH` — **1B bool ✅ (toggle)**: reads 0x00; write 0/1 sticks + verifies |
-| Sleep time | `0x08C2` | `MOUSE_SLEEPTIME` — **1B ✅ numeric (minutes scale)** → read-only state (reads 0x02) |
-| Low power | `0x08C6` / `0x08AC` | `MOUSE_LOWPOWER` / `MOUSE_POWERSAVE` — **two candidate addresses, function unresolved** (⚠️ do NOT conflate with the low-battery-warning bit in the shared `0x08D8` byte, RF story 3-2) → both read-only state, defer entries |
+| Motion sync (移动同步) | `0x0885` | **toggle ✓** (reads 0x01) |
+| Press debounce (按下去抖延迟) | `0x08C0` | **slider 0–32 ms step 2** (byte = ms; factory 0x02) |
+| Release debounce (抬起去抖延迟) | `0x08C1` | **slider 0–32 ms step 2** (byte = ms; factory 0x02) |
+| Sleep time (无线休眠时间) | `0x08C2` | **slider 2–120 min** (byte = min; factory 0x02) |
+| Linear correction (直线修正) | `0x08C3` | numeric 0..3, **not** bool → read-only |
+| Sensor angle (传感器角度) | `0x08C4` | **slider −30°..30° step 1** (signed byte; factory 0x00 = 0°) |
+| Glass tracking (追踪玻璃) | `0x08C5` | **toggle ✓** (reads 0x00) |
+| Lift-off height (光学引擎静默高度) | `0x0884` | **slider 1.0–2.0 mm step 0.1** (byte 1..11 ↔ 1.0..2.0, factory 0x01 = 1.0 mm) |
+| DC switch | `0x08DA` | **toggle ✓** (reads 0x00) |
+| Low power | `0x08C6` / `0x08AC` | two candidate addresses, function unresolved → read-only |
+| Wave correction (波浪修正) | ⚠️ | no confirmed address → not exposed |
+
+> **A Hub divergence (kept deliberately)**: the official VT7 product config
+> (`docs/enc.data.json` key `17939`, loaded by `assets/MousePerformanceUtil`,
+> receiver PID map in `docs/enc-map.data.json` `5139→17939`) sets
+> `enableGlassTracking:false` and `dcSwitch:false`, so the A Hub **hides** the
+> Glass tracking and DC switch toggles for this product. We keep both because
+> the bytes are writable and sticky on the hardware. Debounce/sleep/angle have
+> no per-product range in `enc.data` — the ranges above come from the A Hub
+> settings page, the byte maps are OUR inference (press/release/sleep: byte =
+> displayed value, defaults agree; angle: signed byte; lift-off: byte 1..11 ↔
+> 1.0–2.0, factory 0x01 = minimum). Definitive confirmation = observe an A Hub
+> write and diff the byte (pending, P9).
 
 ### D. Button remap — ✅ addresses, ⚠️ codes
 Each key has an EEPROM field (format to validate) with the function code.

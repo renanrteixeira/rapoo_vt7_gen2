@@ -173,6 +173,26 @@ def rate_hz(code):
     return RATE_HZ[rate_index_from_code(code)]
 
 
+def set_rate(dev, hz):
+    """Sets the polling rate by writing its rateCode to `MOUSE_REPORT`
+    (`0x0880`) and verifying by re-reading.
+
+    `hz` must be one of `RATE_HZ`. The write is confirmed by an immediate
+    read-back (a mismatch raises ValueError); report 7 mirrors the change in
+    `rpt_usb` (validated on the real device). Returns the new
+    {"hz", "code", "slot"} triple.
+    """
+    if not isinstance(hz, int) or isinstance(hz, bool) or hz not in RATE_HZ:
+        raise ValueError("rate must be an int in %r" % (list(RATE_HZ),))
+    slot = RATE_HZ.index(hz)
+    code = RATE_CODE_BY_INDEX[slot]
+    addr = tuple(protocol.eeprom_bank0(protocol.MOUSE_REPORT))
+    raw = dev.write_eeprom_verify(addr, bytes((code,)))
+    if len(raw) != 1 or raw[0] != code:
+        raise ValueError("rate write not verified (read back %r)" % (list(raw),))
+    return {"hz": hz, "code": code, "slot": slot}
+
+
 def read_table(dev):
     """Reads the full 7-slot mode table (slot i = mode id)."""
     raw = _read(dev, _addr(0), len(RATE_HZ))

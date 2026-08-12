@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from src.rapoo_vt7 import main, performance as perf, protocol
 
@@ -332,6 +334,79 @@ class PollingRateHzTest(unittest.TestCase):
     def test_unknown_value_falls_back_to_default_hz(self):
         self.assertEqual(perf.rate_hz(255), 1000)
         self.assertEqual(perf.rate_hz(None), 1000)
+
+
+class SetRateTest(unittest.TestCase):
+    def _addr(self):
+        return tuple(protocol.eeprom_bank0(protocol.MOUSE_REPORT))
+
+    def test_writes_rate_code_and_returns_triple(self):
+        dev = FakeDev()
+        result = perf.set_rate(dev, 2000)
+        self.assertEqual(result, {"hz": 2000, "code": 132, "slot": 4})
+        self.assertEqual(dev.writes, [((0x0880), b"\x84")])
+        self.assertEqual(dev.data[0x0880], b"\x84")
+
+    def test_restores_rate_and_code_from_code_table(self):
+        dev = FakeDev()
+        perf.set_rate(dev, 125)
+        self.assertEqual(dev.writes[0], ((0x0880), b"\x08"))
+        perf.set_rate(dev, 8000)
+        self.assertEqual(dev.writes[-1], ((0x0880), b"\x81"))
+
+    def test_rejects_invalid_rate(self):
+        with self.assertRaises(ValueError):
+            perf.set_rate(FakeDev(), 999)
+        with self.assertRaises(ValueError):
+            perf.set_rate(FakeDev(), True)
+
+    def test_verify_mismatch_raises(self):
+        dev = NoVerifyDev()
+        with self.assertRaises(ValueError):
+            perf.set_rate(dev, 1000)
+
+    def test_short_reply_raises(self):
+        class ShortWriteDev:
+            def read_eeprom(self, addr, length=1):
+                return b"\x00" * (protocol.EEPROM_DATA_OFFSET - 1)
+
+            def write_eeprom_verify(self, addr, data):
+                return self.read_eeprom(addr, len(data))[
+                    protocol.EEPROM_DATA_OFFSET:
+                ]
+
+        with self.assertRaises(ValueError):
+            perf.set_rate(ShortWriteDev(), 1000)
+
+
+class MainRateTest(unittest.TestCase):
+    def _app(self):
+        app = main.RapooApp.__new__(main.RapooApp)
+        app._monitor = FakeMonitor()
+        app._window = SimpleNamespace(_lang="pt_BR")
+        return app
+
+    def test_on_set_rate_submits_write_with_wake(self):
+        app = self._app()
+        app._on_set_rate(4000)
+        fn, on_done, on_error, wake = app._monitor.jobs[0]
+        self.assertTrue(wake)
+        self.assertTrue(callable(on_done))
+        result = fn(FakeDev())
+        self.assertEqual(result["hz"], 4000)
+        self.assertEqual(result["slot"], 5)
+
+    def test_rate_changed_refreshes_perf_for_new_slot(self):
+        app = self._app()
+        refreshed = []
+
+        def refresh(slot=None):
+            refreshed.append(slot)
+
+        app._refresh_perf = refresh
+        with mock.patch.object(main.Notify.Notification, "new"):
+            app._rate_changed({"hz": 2000, "code": 132, "slot": 4})
+        self.assertEqual(refreshed, [4])
 
 
 class MainRfTest(unittest.TestCase):
