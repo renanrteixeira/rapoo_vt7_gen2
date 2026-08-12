@@ -1,0 +1,3 @@
+# Rapoo VT7 Max (24ae:1413 2.4G receiver | 24ae:4613 mouse over USB cable)
+# Grants read/write access to the raw HID (configuration interface)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="24ae", ATTRS{idProduct}=="1413|4613", MODE="0664", GROUP="plugdev"

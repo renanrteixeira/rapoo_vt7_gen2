@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.venv/
+.opencode/node_modules/

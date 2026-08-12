@@ -1,0 +1,534 @@
+import argparse
+import json
+import os
+import sys
+import tempfile
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from src.rapoo_vt7 import i18n, parameters, protocol, settings
+from src.rapoo_vt7.device import RapooDevice, CommandTimeout
+
+
+def fmt(b):
+    return " ".join(f"{x:02X}" for x in (b or b""))
+
+
+def query(dev, cmd_id, args=(), label=None):
+    label = label or protocol.__dict__.get(
+        f"cmd_{cmd_id}", f"cmd 0x{cmd_id:02X}"
+    )
+    resp = dev.query(cmd_id, args, timeout=1.2)
+    print(f"  {label}: {fmt(resp)}")
+    return resp
+
+
+def battery_probe(dev):
+    print(i18n.tr("probe_battery_title"))
+    for i in range(3):
+        resp = dev.query(protocol.GET_BATTERY_LEVEL, timeout=1.2)
+        status = resp[protocol.BATTERY_OFFSET_STATUS]
+        level = resp[protocol.BATTERY_OFFSET_LEVEL]
+        print(
+            i18n.tr(
+                "probe_battery_line",
+                num=i + 1,
+                data=fmt(resp),
+                status=status,
+                level=level,
+            )
+        )
+        time.sleep(0.15)
+
+
+def firmware_probe(dev):
+    print(i18n.tr("probe_firmware_title"))
+    resp = query(dev, protocol.GET_FIRMWARE, [0x00], "get_firmware")
+    if len(resp) > protocol.FIRMWARE_OFFSET_MAJOR:
+        minor = resp[protocol.FIRMWARE_OFFSET_MINOR]
+        major = resp[protocol.FIRMWARE_OFFSET_MAJOR]
+        pid = (resp[7] << 8) | resp[6]
+        print(i18n.tr("probe_firmware_line", major=major, minor=minor, pid=pid))
+
+
+def eeprom_probe(dev):
+    print(i18n.tr("probe_eeprom_title"))
+    for addr, label in [
+        (protocol.EEPROM_CURRENT_CONNECT_PROTOCOL, "CURRENT_CONNECT_PROTOCOL"),
+        (protocol.EEPROM_CONFIG_CURRENT, "CONFIG_CURRENT"),
+    ]:
+        resp = query(dev, protocol.READ_EEPROM, [1, addr[0], addr[1]], label)
+        if len(resp) > protocol.EEPROM_DATA_OFFSET:
+            print(
+                i18n.tr(
+                    "probe_eeprom_value",
+                    value=resp[protocol.EEPROM_DATA_OFFSET],
+                )
+            )
+
+
+def work_mode_probe(dev):
+    print(i18n.tr("probe_workmode_title"))
+    query(dev, protocol.GET_WORK_MODE, [], "get_work_mode")
+
+
+def build_baseline(dev):
+    """Reads the full EEPROM bank 0 (0x0600-0x0A00) in 24-byte blocks
+    (last partial block: 16 bytes) via read_eeprom and returns a JSON-ready
+    dict. Raises CommandTimeout if the mouse does not answer."""
+    start = protocol.EEPROM_BANK0_BASE
+    end = protocol.EEPROM_BANK0_END
+    blocks = {}
+    addr = start
+    while addr < end:
+        length = min(protocol.EEPROM_READ_MAX, end - addr)
+        resp = dev.read_eeprom(protocol.eeprom_bank0(addr - start), length)
+        if len(resp) < protocol.EEPROM_DATA_OFFSET + length:
+            raise ValueError(
+                "short EEPROM reply: got %d want %d"
+                % (len(resp) - protocol.EEPROM_DATA_OFFSET, length)
+            )
+        data = bytes(resp[protocol.EEPROM_DATA_OFFSET : protocol.EEPROM_DATA_OFFSET + length])
+        blocks["0x{:04X}".format(addr)] = data.hex().upper()
+        addr += length
+    return {
+        "device": getattr(dev, "path", None) or "rapoo-vt7",
+        "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "bank": 0,
+        "start": start,
+        "end": end,
+        "blocks": blocks,
+    }
+
+
+def write_baseline(path, data):
+    """Atomically writes the baseline JSON (temp file + os.replace), so a
+    failure never leaves a partial/corrupt baseline behind."""
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=directory or None, prefix=".eeprom_baseline.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# Legacy "looks like a bit toggle" hypothesis fields. Section-C bytes are NOT
+# listed here anymore: their value semantics are confirmed and they are fully
+# covered by the authoritative `PARAM_FIELDS`/`params` block below (a byte must
+# not appear as both a generic toggle hypothesis and a confirmed §C state).
+TOGGLE_FIELDS = (
+    "dpi_enable_gear",
+)
+
+# Section-C mouse parameters with the value semantics confirmed by the
+# on-device write-test (read -> write -> re-read -> restore, 2026-08-11):
+# `editable` True = bool on/off toggle confirmed; False = numeric/unconfirmed
+# byte shown as read-only state, never written as guesswork.
+PARAM_FIELDS = tuple(
+    (name, offset, editable) for name, offset, editable in parameters.PARAMS
+)
+
+
+def button_fields():
+    """The registered button-remap fields (0x0600-0x0638), derived from
+    settings.FIELDS so the hypothesis list never drifts from the registry."""
+    buttons = []
+    for name, field in settings.FIELDS.items():
+        absolute = (field.addr[1] << 8) | field.addr[0]
+        if 0x0600 <= absolute <= 0x0638:
+            buttons.append((name, field.addr))
+    buttons.sort(key=lambda item: (item[1][1] << 8) | item[1][0])
+    return buttons
+
+
+def build_status(dev, report7_window=6.0):
+    """Reads every registered EEPROM field (settings.FIELDS) and returns a
+    JSON-ready dict: per-field addr/raw/decoded value, the format-hypothesis
+    block (2B button fields 1B-vs-2B, shared 0x08D8 bit mask) and the
+    passive-report-7 cross-validation section. Raises CommandTimeout if the
+    mouse does not answer and ValueError on a short reply."""
+    button_addrs = {addr for _, addr in button_fields()}
+    by_addr = {}
+    for name, field in settings.FIELDS.items():
+        size = max(field.size, 2) if field.addr in button_addrs else field.size
+        if field.addr not in by_addr:
+            by_addr[field.addr] = size
+        elif size > by_addr[field.addr]:
+            by_addr[field.addr] = size
+    raw_by_addr = {}
+    for addr, size in by_addr.items():
+        resp = dev.read_eeprom(addr, size)
+        if len(resp) < protocol.EEPROM_DATA_OFFSET + size:
+            raise ValueError(
+                "short EEPROM reply: got %d want %d"
+                % (len(resp) - protocol.EEPROM_DATA_OFFSET, size)
+            )
+        raw_by_addr[addr] = bytes(
+            resp[protocol.EEPROM_DATA_OFFSET : protocol.EEPROM_DATA_OFFSET + size]
+        )
+
+    fields = {}
+    for name, field in settings.FIELDS.items():
+        raw = raw_by_addr[field.addr][: field.size]
+        fields[name] = {
+            "addr": "0x{:04X}".format((field.addr[1] << 8) | field.addr[0]),
+            "raw": raw.hex().upper(),
+            "value": field.decode(raw),
+        }
+
+    hypothesis = build_hypothesis(raw_by_addr)
+    report7 = capture_report7(dev, report7_window)
+    checks = build_checks(dev, fields, report7)
+    return {
+        "fields": fields,
+        "hypothesis": hypothesis,
+        "report7": None if report7 is None else fmt(report7),
+        "checks": checks,
+    }
+
+
+def build_hypothesis(raw_by_addr):
+    """Emits the format hypotheses: the 2B button fields (0x0600-0x0638)
+    print both the 1B and 2B LE interpretations, the shared 0x08D8 byte
+    (RF strategy + low-power warning) prints a bit breakdown, the toggle
+    fields print a bit breakdown, and every Section-C mouse parameter prints
+    its confirmed value semantics (bool toggle vs read-only raw byte). Uses
+    the bytes already read by build_status, so no field is read twice."""
+    buttons = []
+    for name, addr in button_fields():
+        raw = raw_by_addr[addr][:2]
+        buttons.append(
+            {
+                "name": name,
+                "addr": "0x{:04X}".format((addr[1] << 8) | addr[0]),
+                "raw": raw.hex().upper(),
+                "as_1b": raw[0],
+                "as_2b_le": raw[0] | (raw[1] << 8),
+            }
+        )
+
+    shared_addr = tuple(protocol.eeprom_bank0(protocol.RF_STRENGTHEN_SWITCH))
+    raw = raw_by_addr[shared_addr]
+    shared = {
+        "addr": "0x{:04X}".format((shared_addr[1] << 8) | shared_addr[0]),
+        "raw": raw[0],
+        "bits": "0b{:08b}".format(raw[0]),
+        "rf_strengthen_switch": bool(raw[0] & protocol.RF_STRENGTHEN_MASK),
+        "low_power_warn_switch": bool(raw[0] & protocol.LOW_POWE_WARN_MASK),
+    }
+
+    toggles = []
+    for name in TOGGLE_FIELDS:
+        field = settings.FIELDS[name]
+        addr = field.addr
+        byte = raw_by_addr[addr][0]
+        toggles.append(
+            {
+                "name": name,
+                "addr": "0x{:04X}".format((addr[1] << 8) | addr[0]),
+                "raw": byte,
+                "bits": "0b{:08b}".format(byte),
+            }
+        )
+
+    params = []
+    for name, offset, editable in PARAM_FIELDS:
+        addr = tuple(protocol.eeprom_bank0(offset))
+        byte = raw_by_addr[addr][0] if addr in raw_by_addr else None
+        params.append(
+            {
+                "name": name,
+                "addr": "0x{:04X}".format(
+                    protocol.EEPROM_BANK0_BASE + offset
+                ),
+                "raw": byte,
+                "editable": editable,
+                "state": (
+                    "on"
+                    if editable and byte
+                    else "off"
+                    if editable and not byte
+                    else "raw"
+                ),
+            }
+        )
+    return {
+        "buttons": buttons,
+        "shared_0x08D8": shared,
+        "toggles": toggles,
+        "params": params,
+    }
+
+
+def capture_report7(dev, window=6.0):
+    """Listens up to `window` seconds for a passive report 7 and returns the
+    raw bytes, or None if it does not arrive (mouse asleep / quiet)."""
+    end = time.time() + window
+    while time.time() < end:
+        data = dev.read_report(0.5)
+        if data and len(data) > protocol.R7_CONFIG and data[0] == protocol.REPORT_PASSIVE:
+            return data
+    return None
+
+
+def build_checks(dev, fields, report7):
+    """Cross-validates the EEPROM read-back against the passive report 7:
+    DPI gear index, DPI X and Y (at the current gear) against report-7
+    dpiX/dpiY. Returns a list of {field, eeprom, report7, match}."""
+    checks = []
+    if report7 is None:
+        return checks
+    gear = report7[protocol.R7_DPI_GEAR]
+    cur = fields["dpi_current"]["value"]
+    checks.append(
+        {
+            "field": "dpi_current",
+            "eeprom": cur,
+            "report7": gear,
+            "match": "MATCH" if cur == gear else "MISMATCH",
+        }
+    )
+    dpi_x = report7[protocol.R7_DPI_X] | (report7[protocol.R7_DPI_X + 1] << 8)
+    dpi_y = report7[protocol.R7_DPI_Y] | (report7[protocol.R7_DPI_Y + 1] << 8)
+    for name, offset, report_value in (
+        ("dpi_x", protocol.MOUSE_DPI_X_LIST, dpi_x),
+        ("dpi_y", protocol.MOUSE_DPI_Y_LIST, dpi_y),
+    ):
+        if 0 <= gear < protocol.MOUSE_DPI_GEAR_LENGTH:
+            addr = protocol.eeprom_bank0(offset + 2 * gear)
+            resp = dev.read_eeprom(addr, 2)
+            if len(resp) < protocol.EEPROM_DATA_OFFSET + 2:
+                raise ValueError("short EEPROM reply for DPI list")
+            raw = bytes(
+                resp[protocol.EEPROM_DATA_OFFSET : protocol.EEPROM_DATA_OFFSET + 2]
+            )
+            eeprom_value = raw[0] | (raw[1] << 8)
+        else:
+            eeprom_value = None
+        checks.append(
+            {
+                "field": name,
+                "eeprom": eeprom_value,
+                "report7": report_value,
+                "match": (
+                    "MATCH"
+                    if eeprom_value is not None and eeprom_value == report_value
+                    else "MISMATCH"
+                    if eeprom_value is not None
+                    else "UNVERIFIED"
+                ),
+            }
+        )
+    for name in ("rpt_24g", "rpt_usb"):
+        checks.append(
+            {
+                "field": name,
+                "eeprom": None,
+                "report7": report7[
+                    protocol.R7_RPT_24G
+                    if name == "rpt_24g"
+                    else protocol.R7_RPT_USB
+                ],
+                "match": "INFO",
+            }
+        )
+    return checks
+
+
+def print_status(status):
+    print("=== EEPROM field status (raw/decoded) ===")
+    for name, field in sorted(status["fields"].items()):
+        print(
+            "  {:<22} {}  raw={:<16} value={}".format(
+                name, field["addr"], field["raw"], field["value"]
+            )
+        )
+    print("=== Format hypotheses ===")
+    for b in status["hypothesis"]["buttons"]:
+        print(
+            "  {:<22} {}  raw={}  as_1b={}  as_2b_le={}".format(
+                b["name"], b["addr"], b["raw"], b["as_1b"], b["as_2b_le"]
+            )
+        )
+    s = status["hypothesis"]["shared_0x08D8"]
+    print(
+        "  shared 0x08D8 {}  raw={} bits={}  rf_strengthen_switch={} low_power_warn_switch={}".format(
+            s["addr"],
+            s["raw"],
+            s["bits"],
+            "on" if s["rf_strengthen_switch"] else "off",
+            "on" if s["low_power_warn_switch"] else "off",
+        )
+    )
+    for t in status["hypothesis"]["toggles"]:
+        print(
+            "  toggle {:<16} {}  raw={} bits={}".format(
+                t["name"], t["addr"], t["raw"], t["bits"]
+            )
+        )
+    print("=== Section-C parameters (confirmed value semantics) ===")
+    for p in status["hypothesis"]["params"]:
+        if p["editable"]:
+            print(
+                "  param  {:<16} {}  raw={} -> TOGGLE ({})".format(
+                    p["name"], p["addr"], p["raw"], p["state"]
+                )
+            )
+        else:
+            print(
+                "  param  {:<16} {}  raw={} -> READ-ONLY (numeric/unconfirmed)".format(
+                    p["name"], p["addr"], p["raw"]
+                )
+            )
+    print("=== Passive report 7 cross-validation ===")
+    if not status["checks"]:
+        print("  no report 7 received (move the mouse to send one)")
+    else:
+        print("  report7 raw: {}".format(status["report7"]))
+        for c in status["checks"]:
+            print(
+                "  {:<10} eeprom={!s:<10} report7={!s:<10} -> {}".format(
+                    c["field"], c["eeprom"], c["report7"], c["match"]
+                )
+            )
+
+
+def status_main(report7_window=6.0):
+    dev = RapooDevice()
+    try:
+        dev.open()
+    except Exception as exc:
+        print(i18n.tr("probe_error_open", error=exc))
+        return 1
+    try:
+        status = build_status(dev, report7_window=report7_window)
+    except CommandTimeout as exc:
+        print(
+            "ERROR: status aborted - no response from the mouse ({}); "
+            "move the mouse to wake it, then retry.".format(exc),
+            file=sys.stderr,
+        )
+        return 1
+    except ValueError as exc:
+        print(
+            "ERROR: status aborted - invalid read-back: {}".format(exc),
+            file=sys.stderr,
+        )
+        return 1
+    except OSError as exc:
+        print(
+            "ERROR: status failed - could not read the device: {}".format(exc),
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as exc:
+        print("ERROR: status failed: {}".format(exc), file=sys.stderr)
+        return 1
+    finally:
+        dev.close()
+    print_status(status)
+    return 0
+
+
+def dump_main():
+    dev = RapooDevice()
+    try:
+        dev.open()
+    except Exception as exc:
+        print(i18n.tr("probe_error_open", error=exc))
+        return 1
+    try:
+        baseline = build_baseline(dev)
+        write_baseline(settings.EEPROM_BASELINE_PATH, baseline)
+    except CommandTimeout as exc:
+        print(
+            "ERROR: dump aborted - no response from the mouse ({}); "
+            "baseline NOT written (move the mouse to wake it, then retry).".format(
+                exc
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    except OSError as exc:
+        print(
+            "ERROR: dump aborted - could not write baseline: {}".format(exc),
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as exc:
+        print("ERROR: dump failed: {}".format(exc), file=sys.stderr)
+        return 1
+    finally:
+        dev.close()
+    print(
+        "Baseline written to {} ({} blocks, 0x{:04X}-0x{:04X})".format(
+            settings.EEPROM_BASELINE_PATH,
+            len(baseline["blocks"]),
+            baseline["start"],
+            baseline["end"],
+        )
+    )
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="probe")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--dump",
+        action="store_true",
+        help="dump full EEPROM bank 0 (0x0600-0x0A00) to the baseline JSON and exit",
+    )
+    group.add_argument(
+        "--status",
+        action="store_true",
+        help="read every registered EEPROM field (raw/decoded), print format "
+        "hypotheses and cross-validate against the passive report 7, then exit",
+    )
+    args = parser.parse_args()
+
+    if args.dump:
+        return dump_main()
+    if args.status:
+        return status_main()
+
+    dev = RapooDevice()
+    try:
+        dev.open()
+    except Exception as exc:
+        print(i18n.tr("probe_error_open", error=exc))
+        return 1
+    print(i18n.tr("probe_config_interface", path=dev.path))
+
+    battery_probe(dev)
+    firmware_probe(dev)
+    work_mode_probe(dev)
+    eeprom_probe(dev)
+
+    print(i18n.tr("probe_waiting"))
+    end = time.time() + 6
+    while time.time() < end:
+        data = dev._read_report(0.5)
+        if data:
+            print(f"  <- rid={data[0]:02d} len={len(data)} {fmt(data)}")
+
+    dev.close()
+    print("\nOK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

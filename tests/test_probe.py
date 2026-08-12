@@ -1,0 +1,532 @@
+import io
+import json
+import os
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
+
+import probe
+from src.rapoo_vt7 import parameters, protocol, settings
+from src.rapoo_vt7.device import CommandTimeout, DeviceNotFound
+
+
+class FakeDev:
+    """RapooDevice stand-in: read_eeprom returns an ACK reply whose data
+    (starting at EEPROM_DATA_OFFSET) is the address bytes themselves, unless
+    `data` overrides the value at a given absolute address. `report` is the
+    bytes returned by read_report (None = no passive report)."""
+
+    def __init__(self, data=None, report=None):
+        self.path = "/dev/hidraw2"
+        self.calls = []
+        self.data = data or {}
+        self.report = report
+
+    def open(self):
+        return self
+
+    def close(self):
+        pass
+
+    def read_eeprom(self, addr, length):
+        self.calls.append((addr, length))
+        base = (addr[1] << 8) | addr[0]
+        if base in self.data:
+            data = bytes(self.data[base])
+        else:
+            data = bytes((base + i) & 0xFF for i in range(length))
+        resp = bytearray(32)
+        resp[0] = protocol.REPORT_CMD
+        resp[1] = protocol.RESP_ACK
+        resp[protocol.EEPROM_DATA_OFFSET : protocol.EEPROM_DATA_OFFSET + len(data)] = data
+        return bytes(resp)
+
+    def read_report(self, timeout=0.5):
+        return self.report
+
+
+class BuildBaselineTest(unittest.TestCase):
+    def test_reads_43_blocks_covering_bank0(self):
+        dev = FakeDev()
+        baseline = probe.build_baseline(dev)
+
+        self.assertEqual(baseline["device"], "/dev/hidraw2")
+        self.assertEqual(baseline["bank"], 0)
+        self.assertEqual(baseline["start"], protocol.EEPROM_BANK0_BASE)
+        self.assertEqual(baseline["end"], protocol.EEPROM_BANK0_END)
+        self.assertIsInstance(baseline["captured_at"], str)
+
+        blocks = baseline["blocks"]
+        self.assertEqual(len(blocks), 43)
+        keys = list(blocks)
+        self.assertEqual(keys[0], "0x0600")
+        self.assertEqual(keys[1], "0x0618")
+        self.assertEqual(keys[-1], "0x09F0")
+
+        self.assertEqual(len(dev.calls), 43)
+        for i in range(42):
+            with self.subTest(block=i):
+                self.assertEqual(dev.calls[i], (protocol.eeprom_bank0(24 * i), 24))
+        self.assertEqual(dev.calls[-1], (protocol.eeprom_bank0(0x03F0), 16))
+
+        first = bytes.fromhex(blocks["0x0600"])
+        self.assertEqual(first[0], 0x00)
+        self.assertEqual(first[-1], 0x17)
+        self.assertEqual(len(first), 24)
+
+        last = bytes.fromhex(blocks["0x09F0"])
+        self.assertEqual(len(last), 16)
+        self.assertEqual(last[0], 0xF0)
+        self.assertEqual(last[-1], 0xFF)
+
+    def test_command_timeout_propagates(self):
+        dev = FakeDev()
+
+        def boom(addr, length):
+            raise CommandTimeout("asleep")
+
+        dev.read_eeprom = boom
+        with self.assertRaises(CommandTimeout):
+            probe.build_baseline(dev)
+
+    def test_short_reply_raises_value_error(self):
+        dev = FakeDev()
+
+        def short(addr, length):
+            resp = bytearray(protocol.EEPROM_DATA_OFFSET + 3)
+            resp[0] = protocol.REPORT_CMD
+            resp[1] = protocol.RESP_ACK
+            return bytes(resp)
+
+        dev.read_eeprom = short
+        with self.assertRaises(ValueError):
+            probe.build_baseline(dev)
+
+
+class WriteBaselineTest(unittest.TestCase):
+    def test_writes_valid_json_atomically(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "eeprom_baseline.json")
+        data = {
+            "device": "/dev/hidraw2",
+            "bank": 0,
+            "start": 0x0600,
+            "end": 0x0A00,
+            "blocks": {"0x0600": "000102"},
+        }
+        probe.write_baseline(path, data)
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), data)
+        self.assertEqual(
+            [p for p in os.listdir(d) if p.startswith(".")], [],
+            "temp file left behind",
+        )
+
+    def test_replace_error_preserves_previous_and_cleans_temp(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "eeprom_baseline.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("previous")
+        with mock.patch.object(probe.os, "replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                probe.write_baseline(path, {"bank": 0})
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "previous")
+        self.assertEqual(
+            [p for p in os.listdir(d) if p.startswith(".")], [],
+            "temp file left behind",
+        )
+
+    def test_unwritable_dir_raises_oserror(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "sub", "eeprom_baseline.json")
+        with mock.patch.object(
+            probe.os, "makedirs", side_effect=PermissionError("denied")
+        ):
+            with self.assertRaises(PermissionError):
+                probe.write_baseline(path, {"bank": 0})
+        self.assertFalse(os.path.exists(os.path.join(d, "sub")))
+
+
+class StatusTest(unittest.TestCase):
+    def report7(self, gear=1, dpi_x=0x1388, dpi_y=0x1388, rpt24=1, rptusb=1):
+        r = bytearray(18)
+        r[0] = protocol.REPORT_PASSIVE
+        r[protocol.R7_MODE] = 0x10
+        r[protocol.R7_DPI_GEAR] = gear
+        r[protocol.R7_DPI_X] = dpi_x & 0xFF
+        r[protocol.R7_DPI_X + 1] = (dpi_x >> 8) & 0xFF
+        r[protocol.R7_DPI_Y] = dpi_y & 0xFF
+        r[protocol.R7_DPI_Y + 1] = (dpi_y >> 8) & 0xFF
+        r[protocol.R7_RPT_24G] = rpt24
+        r[protocol.R7_RPT_USB] = rptusb
+        r[protocol.R7_CONFIG] = 1
+        return bytes(r)
+
+    def test_status_reads_every_field_and_shared_byte_once(self):
+        dev = FakeDev()
+        status = probe.build_status(dev, report7_window=0.01)
+
+        self.assertEqual(
+            set(status["fields"]), set(settings.FIELDS), "every registry field read"
+        )
+        for name, field in status["fields"].items():
+            with self.subTest(field=name):
+                self.assertIn("addr", field)
+                self.assertIn("raw", field)
+                self.assertIn("value", field)
+
+        shared_calls = [
+            a for a, _ in dev.calls if (a[1] << 8) | a[0] == 0x08D8
+        ]
+        self.assertEqual(
+            len(shared_calls), 1, "shared 0x08D8 byte must be read only once"
+        )
+        self.assertEqual(
+            status["fields"]["rf_strengthen_switch"]["raw"],
+            status["fields"]["low_power_warn_switch"]["raw"],
+        )
+
+    def test_status_decodes_known_value(self):
+        dev = FakeDev(data={0x0898: b"\x02"})
+        status = probe.build_status(dev, report7_window=0.01)
+        self.assertEqual(status["fields"]["dpi_current"]["value"], 2)
+        self.assertEqual(status["fields"]["dpi_current"]["raw"], "02")
+        self.assertEqual(status["fields"]["dpi_current"]["addr"], "0x0898")
+
+    def test_status_button_hypothesis_1b_vs_2b(self):
+        dev = FakeDev()
+        status = probe.build_status(dev, report7_window=0.01)
+        buttons = status["hypothesis"]["buttons"]
+        self.assertEqual(len(buttons), 13)
+        left = next(b for b in buttons if b["name"] == "mouse_left")
+        self.assertEqual(left["addr"], "0x0600")
+        self.assertEqual(left["raw"], "0001")
+        self.assertEqual(left["as_1b"], 0x00)
+        self.assertEqual(left["as_2b_le"], 0x0100)
+        self.assertEqual(left["as_2b_le"], (left["as_1b"] & 0xFF) | 0x0100)
+
+    def test_status_shared_byte_hypothesis(self):
+        dev = FakeDev(data={0x08D8: b"\x05"})
+        status = probe.build_status(dev, report7_window=0.01)
+        shared = status["hypothesis"]["shared_0x08D8"]
+        self.assertEqual(shared["raw"], 5)
+        self.assertEqual(shared["bits"], "0b00000101")
+        self.assertTrue(shared["rf_strengthen_switch"])
+        self.assertFalse(shared["low_power_warn_switch"])
+
+    def test_status_params_classified_from_registry(self):
+        dev = FakeDev(
+            data={
+                0x0885: b"\x01",   # motion_sync on (editable)
+                0x08C5: b"\x00",   # glass_track off (editable)
+                0x08DA: b"\x01",   # dc_switch on (editable)
+                0x08C3: b"\x03",   # linear_ripple numeric (read-only)
+                0x08C0: b"\x1E",   # press_debounce ms (read-only)
+            }
+        )
+        status = probe.build_status(dev, report7_window=0.01)
+        params = {p["name"]: p for p in status["hypothesis"]["params"]}
+        self.assertEqual(len(params), len(parameters.PARAMS))
+        for name, _o, editable in parameters.PARAMS:
+            with self.subTest(param=name):
+                self.assertIn(name, params)
+                self.assertEqual(params[name]["editable"], editable)
+                self.assertEqual(
+                    params[name]["state"],
+                    "on" if editable and params[name]["raw"]
+                    else "off" if editable
+                    else "raw",
+                )
+        self.assertEqual(params["motion_sync"]["state"], "on")
+        self.assertEqual(params["glass_track"]["state"], "off")
+        self.assertEqual(params["dc_switch"]["state"], "on")
+        self.assertEqual(params["linear_ripple"]["state"], "raw")
+        self.assertEqual(params["press_debounce"]["addr"], "0x08C0")
+
+    def test_status_section_c_never_in_generic_toggles(self):
+        dev = FakeDev()
+        status = probe.build_status(dev, report7_window=0.01)
+        toggle_names = {t["name"] for t in status["hypothesis"]["toggles"]}
+        section_c = {name for name, _o, _e in parameters.PARAMS}
+        self.assertEqual(
+            toggle_names & section_c,
+            set(),
+            "§C bytes must be reported once, by the params block",
+        )
+
+    def test_status_cross_validation_match(self):
+        dev = FakeDev(
+            data={
+                0x0898: b"\x01",                       # dpi_current = 1
+                0x0888 + 2 * 1: b"\x88\x13",           # dpi_x_list[1] = 5000
+                0x08C8 + 2 * 1: b"\x88\x13",           # dpi_y_list[1] = 5000
+            },
+            report=self.report7(gear=1, dpi_x=5000, dpi_y=5000),
+        )
+        status = probe.build_status(dev, report7_window=0.01)
+        self.assertEqual(
+            {c["field"]: c["match"] for c in status["checks"]},
+            {
+                "dpi_current": "MATCH",
+                "dpi_x": "MATCH",
+                "dpi_y": "MATCH",
+                "rpt_24g": "INFO",
+                "rpt_usb": "INFO",
+            },
+        )
+
+    def test_status_cross_validation_mismatch(self):
+        dev = FakeDev(
+            data={
+                0x0898: b"\x02",                       # dpi_current = 2
+                0x0888 + 2 * 1: b"\x00\x00",           # dpi_x_list[1] != report
+                0x08C8 + 2 * 1: b"\x00\x00",
+            },
+            report=self.report7(gear=1, dpi_x=5000, dpi_y=5000),
+        )
+        status = probe.build_status(dev, report7_window=0.01)
+        self.assertEqual(
+            {c["field"]: c["match"] for c in status["checks"]},
+            {
+                "dpi_current": "MISMATCH",
+                "dpi_x": "MISMATCH",
+                "dpi_y": "MISMATCH",
+                "rpt_24g": "INFO",
+                "rpt_usb": "INFO",
+            },
+        )
+
+    def test_status_gear_out_of_range_is_unverified(self):
+        dev = FakeDev(
+            data={0x0898: b"\x63"},               # dpi_current = 99
+            report=self.report7(gear=99, dpi_x=5000, dpi_y=5000),
+        )
+        status = probe.build_status(dev, report7_window=0.01)
+        self.assertEqual(
+            {c["field"]: c["match"] for c in status["checks"]},
+            {
+                "dpi_current": "MATCH",
+                "dpi_x": "UNVERIFIED",
+                "dpi_y": "UNVERIFIED",
+                "rpt_24g": "INFO",
+                "rpt_usb": "INFO",
+            },
+        )
+
+    def test_status_no_report_marker(self):
+        dev = FakeDev()
+        status = probe.build_status(dev, report7_window=0.01)
+        self.assertIsNone(status["report7"])
+        self.assertEqual(status["checks"], [])
+        self.assertIn("fields", status)
+
+    def test_status_short_reply_raises_value_error(self):
+        dev = FakeDev()
+
+        def short(addr, length):
+            resp = bytearray(protocol.EEPROM_DATA_OFFSET + 3)
+            resp[0] = protocol.REPORT_CMD
+            resp[1] = protocol.RESP_ACK
+            return bytes(resp)
+
+        dev.read_eeprom = short
+        with self.assertRaises(ValueError):
+            probe.build_status(dev, report7_window=0.01)
+
+    def test_status_command_timeout_propagates(self):
+        dev = FakeDev()
+
+        def boom(addr, length):
+            raise CommandTimeout("asleep")
+
+        dev.read_eeprom = boom
+        with self.assertRaises(CommandTimeout):
+            probe.build_status(dev, report7_window=0.01)
+
+    def test_status_main_timeout_returns_1(self):
+        dev = FakeDev()
+
+        def boom(addr, length):
+            raise CommandTimeout("asleep")
+
+        dev.read_eeprom = boom
+        with mock.patch.object(probe, "RapooDevice", return_value=dev):
+            rc = probe.status_main(report7_window=0.01)
+        self.assertEqual(rc, 1)
+
+    def test_status_main_device_open_error_returns_1(self):
+        class OpenFails:
+            def open(self):
+                raise DeviceNotFound("not found")
+
+            def close(self):
+                pass
+
+        with mock.patch.object(probe, "RapooDevice", return_value=OpenFails()):
+            rc = probe.status_main(report7_window=0.01)
+        self.assertEqual(rc, 1)
+
+    def test_status_main_oserror_returns_1(self):
+        dev = FakeDev()
+
+        def boom(addr, length):
+            raise OSError("busy")
+
+        dev.read_eeprom = boom
+        with mock.patch.object(probe, "RapooDevice", return_value=dev):
+            rc = probe.status_main(report7_window=0.01)
+        self.assertEqual(rc, 1)
+
+    def test_status_main_short_reply_returns_1(self):
+        dev = FakeDev()
+
+        def short(addr, length):
+            resp = bytearray(protocol.EEPROM_DATA_OFFSET + 3)
+            resp[0] = protocol.REPORT_CMD
+            resp[1] = protocol.RESP_ACK
+            return bytes(resp)
+
+        dev.read_eeprom = short
+        with mock.patch.object(probe, "RapooDevice", return_value=dev):
+            rc = probe.status_main(report7_window=0.01)
+        self.assertEqual(rc, 1)
+
+    def test_status_main_happy_prints_fields(self):
+        dev = FakeDev(data={0x0898: b"\x01"})
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out:
+            rc = probe.status_main(report7_window=0.01)
+        self.assertEqual(rc, 0)
+        self.assertIn("dpi_current", out.getvalue())
+        self.assertIn("0x0898", out.getvalue())
+
+    def test_status_main_renders_report7_crosscheck(self):
+        dev = FakeDev(
+            data={0x0898: b"\x01"},
+            report=self.report7(gear=1, dpi_x=5000, dpi_y=5000),
+        )
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out:
+            rc = probe.status_main(report7_window=0.01)
+        self.assertEqual(rc, 0)
+        self.assertIn("report7 raw: 07", out.getvalue())
+        self.assertIn("-> MATCH", out.getvalue())
+
+    def test_main_status_and_dump_flags_are_mutually_exclusive(self):
+        with mock.patch.object(sys, "argv", ["probe", "--dump", "--status"]):
+            with self.assertRaises(SystemExit):
+                probe.main()
+
+    def test_main_status_flag_runs_status(self):
+        dev = FakeDev(data={0x0898: b"\x01"})
+        with mock.patch.object(sys, "argv", ["probe", "--status"]), \
+                mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch.object(probe, "capture_report7", return_value=None), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out:
+            rc = probe.main()
+        self.assertEqual(rc, 0)
+        self.assertIn("dpi_current", out.getvalue())
+
+
+class DumpMainTest(unittest.TestCase):
+    def test_dump_timeout_aborts_and_preserves_previous(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "eeprom_baseline.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("previous")
+
+        dev = FakeDev()
+
+        def boom(addr, length):
+            raise CommandTimeout("asleep")
+
+        dev.read_eeprom = boom
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch.object(probe.settings, "EEPROM_BASELINE_PATH", path):
+            rc = probe.dump_main()
+        self.assertEqual(rc, 1)
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "previous")
+
+    def test_dump_oserror_aborts_and_preserves_previous(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "eeprom_baseline.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("previous")
+
+        dev = FakeDev()
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch.object(
+                    probe.os, "makedirs", side_effect=OSError("read-only")
+                ), mock.patch.object(probe.settings, "EEPROM_BASELINE_PATH", path):
+            rc = probe.dump_main()
+        self.assertEqual(rc, 1)
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "previous")
+
+    def test_happy_dump_writes_file(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "eeprom_baseline.json")
+
+        dev = FakeDev()
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch.object(probe.settings, "EEPROM_BASELINE_PATH", path):
+            rc = probe.dump_main()
+        self.assertEqual(rc, 0)
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(len(data["blocks"]), 43)
+
+    def test_main_dump_flag_runs_dump(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "eeprom_baseline.json")
+
+        dev = FakeDev()
+        with mock.patch.object(sys, "argv", ["probe", "--dump"]), \
+                mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch.object(probe.settings, "EEPROM_BASELINE_PATH", path):
+            rc = probe.main()
+        self.assertEqual(rc, 0)
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(len(data["blocks"]), 43)
+
+    def test_dump_device_open_error_returns_1(self):
+        class OpenFails:
+            def open(self):
+                raise DeviceNotFound("not found")
+
+            def close(self):
+                pass
+
+        with mock.patch.object(probe, "RapooDevice", return_value=OpenFails()):
+            rc = probe.dump_main()
+        self.assertEqual(rc, 1)
+
+    def test_dump_short_reply_returns_1(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "eeprom_baseline.json")
+
+        dev = FakeDev()
+
+        def short(addr, length):
+            resp = bytearray(protocol.EEPROM_DATA_OFFSET + 3)
+            resp[0] = protocol.REPORT_CMD
+            resp[1] = protocol.RESP_ACK
+            return bytes(resp)
+
+        dev.read_eeprom = short
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch.object(probe.settings, "EEPROM_BASELINE_PATH", path):
+            rc = probe.dump_main()
+        self.assertEqual(rc, 1)
+        self.assertFalse(os.path.exists(path))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,62 @@
+# Sprint Status — Rapoo VT7
+# Manually built from `_bmad-output/specs/spec-rapoo-vt7/stories.yaml` (spec's
+# story source of truth) + `phase-map.md`. The deterministic script
+# (sprint_plan.py) could not run: it requires `ruamel.yaml`, unavailable in
+# this environment (no pip/uv; sudo requires a password), and it parses epic
+# markdown files, which this project does not use (plan lives in stories.yaml).
+
+# generated: 08-10-2026 20:13
+# project: rapoo_vt7_gen2
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# Epic = roadmap phase (phase-map.md). Phase 1 (battery, CAP-1..3) is already
+# shipped and has no stories here; epics map the pending phases 0/2/3/4/5.
+
+generated: 08-10-2026 20:13
+last_updated: 08-11-2026
+project: rapoo_vt7_gen2
+project_key: NOKEY
+tracking_system: file-system
+story_location: "_bmad-output/implementation-artifacts"
+
+development_status:
+  # Phase 0 — EEPROM infrastructure (CAP-4) — S1, S2, S3
+  epic-1: done
+  1-1-eeprom-write-verify: done
+  1-2-baseline-dump-settings-module: done
+  1-3-full-read-format-validation: done
+  epic-1-retrospective: optional
+
+  # Phase 2 — DPI control (CAP-5) — S4
+  # Implemented out of the story's scope: lives in the WINDOW tabs (not the
+  # systray menu — the tray submenu was removed). See CONTEXT.md B2.
+  epic-2: done
+  2-1-dpi-systray-menu: done
+  epic-2-retrospective: optional
+
+  # Phase 3 — Performance / parameters (CAP-6) — S5, S6, S7
+  epic-3: in-progress
+  3-1-performance-modes: review
+  3-2-rf-polling-rate: review
+  3-3-mouse-parameters-toggles: in-progress
+  epic-3-retrospective: optional
+
+  # Phase 4 — Button remap (CAP-7) — S8
+  epic-4: backlog
+  4-1-button-remap: backlog
+  epic-4-retrospective: optional
+
+  # Phase 5 — System operations (CAP-8) — S9
+  epic-5: backlog
+  5-1-system-operations: backlog
+  epic-5-retrospective: optional
+
+action_items:
+  - id: s3-review
+    description: >-
+      Close story 3 review: update docs/FEATURES.md §2 with validated 1B/2B
+      formats, answer open questions 1/3/6/7 and feed findings into the
+      spec-1-3 memlog; then flip 1-3 to done.
+    status: done

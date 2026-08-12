@@ -1,0 +1,78 @@
+- id: "1"
+  title: EEPROM write + verify
+  description: >-
+    Add write_eeprom to device.py (command 0xA5, 2-byte LE address, len<=24)
+    with immediate re-read verification, per CAP-4. Includes unit tests.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Test on a reversible field (e.g. a DPI value) and confirm by re-read;
+    never write before the S2 baseline exists (golden rule). Run
+    `python3 -m unittest discover -s tests`.
+- id: "2"
+  title: Baseline dump + settings module
+  description: >-
+    probe.py --dump reads the EEPROM in 24-byte blocks to
+    ~/.cache/rapoo-vt7/eeprom_baseline.json; new settings.py maps the
+    FEATURES.md section 2 addresses to named fields with range validation,
+    per CAP-4.
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Capture the baseline NOW, before any write. JSON at
+    ~/.cache/rapoo-vt7/eeprom_baseline.json.
+- id: "3"
+  title: Full read + format validation
+  description: >-
+    probe.py --status reads all section 2 addresses and resolves the 1B vs
+    2B LE formats, cross-validating with the passive report 7, per CAP-4.
+    Records results in docs/FEATURES.md (low-confidence -> validated).
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Update the docs/FEATURES.md section 2 table with validated formats and
+    answer open questions 1/3/6/7; feed findings back into the spec memlog.
+- id: "4"
+  title: DPI in the systray menu
+  description: >-
+    Show current gear + DPI X/Y (passive report 7 / EEPROM), switch gear
+    (0x0898), set value (0x0888/0x08C8, 50-26000 step 50) and enable/disable
+    gears (0x0896) from the menu, per CAP-5. Validate persistence.
+  invoke_dev_with: >-
+    Android-style "DPI: value" + arrows to switch gears; confirm the gear
+    persists across reboot (open question 2).
+- id: "5"
+  title: Performance modes
+  description: >-
+    Read/write performance mode 0x08DC with a 6-mode submenu, per CAP-6.
+    Validate that each mode really changes the sensor (report 7 / movement).
+- id: "6"
+  title: RF + polling rate
+  description: >-
+    RF strategy 0x08D8 (shared bit mask with the low-power warning) and the
+    polling-rate index-to-Hz map, per CAP-6. Answers open questions 5 and 6.
+  invoke_dev_with: >-
+    Never write the low-power warning bits unknowingly: 0x08D8 is shared
+    with LOW_POWE_WARN_SWITCH.
+- id: "7"
+  title: Mouse parameters toggles
+  description: >-
+    Section C parameter toggles (motion sync, corrections, sensor angle,
+    glass, debounce, lift-off, DC switch, sleep, low power), per CAP-6.
+    Each flows read -> show -> write -> re-read.
+- id: "8"
+  title: Button remap
+  description: >-
+    Extract the function numeric codes from the A Hub bundle and build the
+    key-to-function UI, writing key fields 0x0600-0x0638, per CAP-7.
+    Always keep at least one left button functional.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Extract codes via A Hub configure + before/after dump diff (open
+    question 4); enforce >=1 left button.
+- id: "9"
+  title: System operations
+  description: >-
+    Factory reset (0xAD) with a confirmation dialog, device name (0x09EC)
+    and receiver pairing 3-step flow, per CAP-8.
+  spec_checkpoint: true
+  invoke_dev_with: >-
+    Factory reset wipes everything - confirmation dialog required; pairing
+    is 3 steps (connect wired, position, press L+M+R).

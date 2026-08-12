@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="256" height="256" viewBox="0 0 256 256">
+<defs>
+<linearGradient id="linear-pattern-0" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="256" y2="256">
+<stop offset="0" stop-color="rgb(14.9%, 65.1%, 60.4%)" stop-opacity="1"/>
+<stop offset="1" stop-color="rgb(0%, 47.5%, 42%)" stop-opacity="1"/>
+</linearGradient>
+<radialGradient id="radial-pattern-0" gradientUnits="userSpaceOnUse" cx="96" cy="72" fx="96" fy="72" r="300">
+<stop offset="0.0666667" stop-color="rgb(100%, 100%, 100%)" stop-opacity="0.14"/>
+<stop offset="0.533333" stop-color="rgb(100%, 100%, 100%)" stop-opacity="0.03"/>
+<stop offset="1" stop-color="rgb(100%, 100%, 100%)" stop-opacity="0"/>
+</radialGradient>
+</defs>
+<path fill-rule="nonzero" fill="url(#linear-pattern-0)" d="M 0 56 C 0 25.070312 25.070312 0 56 0 L 200 0 C 230.929688 0 256 25.070312 256 56 L 256 200 C 256 230.929688 230.929688 256 200 256 L 56 256 C 25.070312 256 0 230.929688 0 200 Z M 0 56 "/>
+<path fill-rule="nonzero" fill="url(#radial-pattern-0)" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" stroke="rgb(0%, 0%, 0%)" stroke-opacity="0.08" stroke-miterlimit="10" d="M 0 56 C 0 25.070312 25.070312 0 56 0 L 200 0 C 230.929688 0 256 25.070312 256 56 L 256 200 C 256 230.929688 230.929688 256 200 256 L 56 256 C 25.070312 256 0 230.929688 0 200 Z M 0 56 "/>
+<path fill-rule="nonzero" fill="rgb(100%, 100%, 100%)" fill-opacity="1" d="M 134.398438 72.046875 L 134.398438 122.800781 L 179.199219 122.800781 C 179.199219 94.832031 160.257812 74.800781 134.398438 72.046875 Z M 76.800781 161.199219 C 76.800781 189.488281 99.710938 212.398438 128 212.398438 C 156.289062 212.398438 179.199219 189.488281 179.199219 161.199219 L 179.199219 135.601562 L 76.800781 135.601562 Z M 121.601562 72.046875 C 95.742188 74.800781 76.800781 94.832031 76.800781 122.800781 L 121.601562 122.800781 Z M 121.601562 72.046875 "/>
+<path fill-rule="nonzero" fill="rgb(100%, 75.7%, 2.7%)" fill-opacity="1" d="M 113 108 L 113 141 L 122 141 L 122 168 L 143 132 L 131 132 L 143 108 Z M 113 108 "/>
+</svg>
