@@ -198,17 +198,30 @@ class StatusTest(unittest.TestCase):
         self.assertEqual(status["fields"]["dpi_current"]["raw"], "02")
         self.assertEqual(status["fields"]["dpi_current"]["addr"], "0x0898")
 
-    def test_status_button_hypothesis_1b_vs_2b(self):
-        dev = FakeDev()
+    def test_status_button_hypothesis_4b_method(self):
+        # Explicit unknown method (not FakeDev's address-derived default) so
+        # the decode path is exercised regardless of the fake's behavior.
+        dev = FakeDev(data={0x0600: bytes.fromhex("00ff0102")})
         status = probe.build_status(dev, report7_window=0.01)
         buttons = status["hypothesis"]["buttons"]
         self.assertEqual(len(buttons), 13)
         left = next(b for b in buttons if b["name"] == "mouse_left")
         self.assertEqual(left["addr"], "0x0600")
-        self.assertEqual(left["raw"], "0001")
-        self.assertEqual(left["as_1b"], 0x00)
-        self.assertEqual(left["as_2b_le"], 0x0100)
-        self.assertEqual(left["as_2b_le"], (left["as_1b"] & 0xFF) | 0x0100)
+        self.assertEqual(left["raw"], "00FF0102")
+        self.assertIsNone(left["fn"])
+        self.assertFalse(left["left_click"])
+
+    def test_status_button_hypothesis_decodes_real_method(self):
+        from src.rapoo_vt7 import buttons
+
+        dev = FakeDev(data={0x0600: bytes.fromhex("03000100")})
+        status = probe.build_status(dev, report7_window=0.01)
+        left = next(
+            b for b in status["hypothesis"]["buttons"] if b["name"] == "mouse_left"
+        )
+        self.assertEqual(left["raw"], "03000100")
+        self.assertEqual(left["fn"], "mouse_left")
+        self.assertTrue(left["left_click"])
 
     def test_status_shared_byte_hypothesis(self):
         dev = FakeDev(data={0x08D8: b"\x05"})
@@ -265,8 +278,9 @@ class StatusTest(unittest.TestCase):
                 0x0898: b"\x01",                       # dpi_current = 1
                 0x0888 + 2 * 1: b"\x88\x13",           # dpi_x_list[1] = 5000
                 0x08C8 + 2 * 1: b"\x88\x13",           # dpi_y_list[1] = 5000
+                0x0880: b"\x01",                       # rateCode 1000 Hz
             },
-            report=self.report7(gear=1, dpi_x=5000, dpi_y=5000),
+            report=self.report7(gear=1, dpi_x=5000, dpi_y=5000, rptusb=1),
         )
         status = probe.build_status(dev, report7_window=0.01)
         self.assertEqual(
@@ -277,6 +291,7 @@ class StatusTest(unittest.TestCase):
                 "dpi_y": "MATCH",
                 "rpt_24g": "INFO",
                 "rpt_usb": "INFO",
+                "rate_mirror": "MATCH",
             },
         )
 
@@ -286,8 +301,9 @@ class StatusTest(unittest.TestCase):
                 0x0898: b"\x02",                       # dpi_current = 2
                 0x0888 + 2 * 1: b"\x00\x00",           # dpi_x_list[1] != report
                 0x08C8 + 2 * 1: b"\x00\x00",
+                0x0880: b"\x08",                       # rateCode 125 Hz
             },
-            report=self.report7(gear=1, dpi_x=5000, dpi_y=5000),
+            report=self.report7(gear=1, dpi_x=5000, dpi_y=5000, rptusb=1),
         )
         status = probe.build_status(dev, report7_window=0.01)
         self.assertEqual(
@@ -298,13 +314,30 @@ class StatusTest(unittest.TestCase):
                 "dpi_y": "MISMATCH",
                 "rpt_24g": "INFO",
                 "rpt_usb": "INFO",
+                "rate_mirror": "MISMATCH",
             },
         )
 
+    def test_status_rate_mirror_validates_rpt_usb_against_0x0880(self):
+        # Story 3-2: rpt_usb IS the rateCode from 0x0880 (validated on the
+        # device). The tool must flag a broken mirror, not print it as INFO.
+        dev = FakeDev(
+            data={0x0880: b"\x01"},                   # rateCode 1000 Hz
+            report=self.report7(rptusb=1),
+        )
+        status = probe.build_status(dev, report7_window=0.01)
+        rate = next(c for c in status["checks"] if c["field"] == "rate_mirror")
+        self.assertEqual(rate["match"], "MATCH")
+        self.assertEqual(rate["eeprom"], 1)
+        self.assertEqual(rate["report7"], 1)
+
     def test_status_gear_out_of_range_is_unverified(self):
         dev = FakeDev(
-            data={0x0898: b"\x63"},               # dpi_current = 99
-            report=self.report7(gear=99, dpi_x=5000, dpi_y=5000),
+            data={
+                0x0898: b"\x63",               # dpi_current = 99
+                0x0880: b"\x01",
+            },
+            report=self.report7(gear=99, dpi_x=5000, dpi_y=5000, rptusb=1),
         )
         status = probe.build_status(dev, report7_window=0.01)
         self.assertEqual(
@@ -315,6 +348,7 @@ class StatusTest(unittest.TestCase):
                 "dpi_y": "UNVERIFIED",
                 "rpt_24g": "INFO",
                 "rpt_usb": "INFO",
+                "rate_mirror": "MATCH",
             },
         )
 

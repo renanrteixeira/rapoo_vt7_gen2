@@ -76,6 +76,29 @@ context:
 - Given the feature is implemented, it does not touch DPI behavior, button-remap flows, or performance mode write semantics from story 3-1.
 - Given the current test suite, `python3 -m unittest discover -s tests` should pass.
 
+### Review Findings
+
+- [x] [Review][Defer] Default `main()` probe path has no try/except — battery/firmware probes raise a raw traceback when the mouse is asleep; `dump_main`/`status_main` handle it, the default flow does not. [probe.py:516] — deferred, pre-existing
+- [x] [Review][Defer] `battery_probe`/`firmware_probe` index the reply without a length guard — a short/empty reply (`06 00…` heartbeat) raises `IndexError`; `firmware_probe` also hard-codes PID bytes 6/7 instead of `protocol` offsets. [probe.py:27,45] — deferred, pre-existing
+- [x] [Review][Defer] `Field.encode` string branch truncates without re-appending NUL and can split a multi-byte UTF-8 char at `size` — `config_name` (16 B) could be written unterminated. [settings.py:37] — deferred, pre-existing
+- [x] [Review][Defer] Address `0x0884` is registered twice with conflicting meanings — `settings.mouse_slight` (sensor param, "do not edit") vs `parameters.lift_off` (1.0–2.0 mm slider); `probe --status` prints the same byte under two names and `FEATURES.md` §2.B ("don't edit") contradicts §2.C (editable slider). Same tension for `0x0885` (motion sync). Cross-story (3-3) registry/ doc tension, not a 3-2 defect. [settings.py:89] — deferred, pre-existing
+- [x] [Review][Defer] `dpi_x_list`/`dpi_y_list` are 7-slot × 2-byte tables but modeled as scalar 2-byte fields — `--status` decodes only slot 0; the registry cannot read/write whole tables. [settings.py:81] — deferred, pre-existing
+- [x] [Review][Defer] `probe.py` default flow uses the private `dev._read_report(0.5)` while `capture_report7` uses the public `dev.read_report(...)` — inconsistent device API. [probe.py:524] — deferred, pre-existing
+- [x] [Review][Defer] `dump_main`/`status_main` do no device-identity check (PID `0x4613`/config interface/prefix) before reading EEPROM and writing the baseline — a wrong device that answers `0xA4` yields a garbage baseline; the JSON records only `dev.path`. [probe.py:446] — deferred, pre-existing
+- [x] [Review][Defer] `dpi_enable_gear` (validated as count-1 0..6) is classified as a generic bit-toggle field — `--status` prints a bit breakdown contradicting the count semantics in the registry comment. [probe.py:132] — deferred, pre-existing
+- [x] [Review][Defer] `Field.encode` bool coerces `1 if value else 0` before the `isinstance(int)` check — any truthy non-int (e.g. `"yes"`, `2`) is silently encoded as 1 rather than rejected. [settings.py:44] — deferred, pre-existing
+- [x] [Review][Defer] `test_status_button_hypothesis_1b_vs_2b` asserts `as_2b_le == (as_1b & 0xFF) | 0x0100`, a tautology of the `FakeDev` address-derived bytes (the `0x0100` is hard-coded) — it does not exercise the 1B-vs-2B interpretation. [test_probe.py:211] — deferred, pre-existing
+- [x] [Review][Defer] `query()`, `battery_probe`, `firmware_probe`, `work_mode_probe`, `eeprom_probe` and the default `main()` path have zero test coverage — exactly where the unsafe reply indexing lives. [test_probe.py] — deferred, pre-existing
+- [x] [Review][Defer] Default `main()` prints `"\nOK"` and returns 0 unconditionally — a partial non-raising failure still exits 0, misleading scripts that check the exit code. [probe.py:529] — deferred, pre-existing
+- [x] [Review][Defer] `Field.range` on DPI fields does not enforce the 50-step grid — an off-grid DPI value passes the settings codec (the `dpi.py` write path does enforce it; latent only). [settings.py:81] — deferred, pre-existing
+- [x] [Review][Defer] `write_baseline` leaks the mkstemp fd if `os.fdopen` raises before the `with` block. [probe.py:115] — deferred, pre-existing
+- [x] [Review][Defer] `build_hypothesis` does `raw_by_addr[shared_addr]` unguarded — a `KeyError` if the RF fields are ever dropped from `settings.FIELDS`; safe today (both registered). [probe.py:223] — deferred, pre-existing
+- [x] [Review][Defer] `FEATURES.md` §2.C header claims the whole block "✅ writable (write-test 2026-08-11)" while Low power `0x08C6/0x08AC` is "function unresolved → read-only" and Wave correction has "no confirmed address" — the doc does not separate byte-writability from resolved semantics. [FEATURES.md §2.C] — deferred, pre-existing
+- [x] [Review][Defer] Rate-selector UI + `set_rate` write path go beyond the spec's "state/exposure only" Design Note (Ask First trigger) — already shipped, readback-verified, slot-mapped and validated on device; a retrospective scope note, not a defect. [spec Design Notes] — deferred, pre-existing
+- [x] [Review][Patch] `rf_error` (and other formatted keys) placeholder contract unpinned — `test_status_format_placeholders` covers only 5 keys; `rf_error`, `perf_error`, `perf_rate_changed`, `perf_changed`, `perf_mode_not_selectable`, `param_more_errors` are never `.format()`-checked, so a placeholder rename in one locale breaks the RF error line at runtime with no test failing. Extend the test to every key the code formats with the exact kwargs. [test_i18n.py:71]
+- [x] [Review][Patch] `probe --status` never cross-validates the story-3-2 rate mirror — `build_checks` reports `rpt_usb` as `INFO` only, while `FEATURES.md` claims the tool verifies `rpt_usb`↔`0x0880` (validated on device). Add a `mouse_report`(0x0880)↔`rpt_usb` MATCH/MISMATCH check + test, mirroring the DPI checks. [probe.py:335]
+- [x] [Review][Patch] `FEATURES.md` Phase 3 "Performance modes" bullet is stale — checkbox `[x]` but text says "On-device validation pending", contradicting §2.B "✅ VALIDATED ON DEVICE (2026-08-11)"; the roadmap should match the inventory table. [FEATURES.md:211]
+
 ## Spec Change Log
 
 - 2026-08-11 (implement): added `RF_STRENGTHEN_MASK`/`LOW_POWE_WARN_MASK`
@@ -93,6 +116,15 @@ context:
   shared byte confirmed-by-read while the bit positions stay a ⚠️ hypothesis
   pending a device write-diff, and added `tests/test_i18n.py` (locale key parity)
   + RF error-render/unhashable-input tests. Suite 132→139, all pass.
+- 2026-08-12 (code review of story 3-2): extended `test_status_format_placeholders`
+  to cover every key the code formats (`rf_status`, `rf_error`, `perf_status`,
+  `perf_error`, `perf_rate_changed`, `perf_changed`, `perf_mode_not_selectable`,
+  `rf_changed`, `param_changed`, `param_error`, `param_more_errors`) with their
+  exact kwargs and catching `ValueError`; added a `rate_mirror` MATCH/MISMATCH
+  check in `probe.build_checks` cross-validating `rpt_usb` against `0x0880` +
+  a dedicated test (and pinned the existing cross-validation tests to the new
+  check set); fixed the stale `docs/FEATURES.md` Phase 3 "Performance modes"
+  bullet ("validation pending" → validated-on-device). Suite 223→224, all pass.
 
 ## Design Notes
 

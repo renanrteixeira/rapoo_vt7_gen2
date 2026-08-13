@@ -1,6 +1,6 @@
 import unittest
 
-from src.rapoo_vt7 import gui, i18n, parameters as par
+from src.rapoo_vt7 import buttons, gui, i18n, parameters as par
 
 
 def t(key, **kw):
@@ -140,6 +140,18 @@ class PerfRateStateTest(unittest.TestCase):
         self.assertFalse(sensitive)
 
 
+class PerfModeNameTest(unittest.TestCase):
+    def test_known_mode_uses_translation(self):
+        self.assertEqual(gui.perf_mode_name(t, 3), t("perf_mode_3"))
+
+    def test_out_of_range_mode_falls_back(self):
+        for bad in (6, 255, -1, None, "3"):
+            with self.subTest(bad=bad):
+                self.assertEqual(
+                    gui.perf_mode_name(t, bad), t("perf_mode_unknown")
+                )
+
+
 class RfRadioStateTest(unittest.TestCase):
     def test_adaptive_is_marked_when_off(self):
         rf = {"rf_strengthen_switch": False, "low_power_warn_switch": False}
@@ -169,6 +181,107 @@ class RfRadioStateTest(unittest.TestCase):
         active, sensitive = gui.rf_radio_state(None, None, None)
         self.assertIsNone(active)
         self.assertFalse(sensitive)
+
+
+def buttons_info(fns=None, errors=None):
+    fns = fns or {"mouse_left": "mouse_left"}
+    buttons_ = {}
+    for name, _o in buttons.BUTTONS:
+        if name in fns:
+            fid = fns[name]
+            method = buttons.METHODS.get(fid)
+            buttons_[name] = {
+                "name": name,
+                "addr": buttons.button_addr(name),
+                "method": method,
+                "fn": fid,
+                "raw_hex": method.hex() if method else None,
+            }
+    return {"buttons": buttons_, "errors": errors or {}}
+
+
+class ButtonsRenderPlanTest(unittest.TestCase):
+    def test_clean_info_marks_current_function(self):
+        status, pickers = gui.buttons_render_plan(buttons_info(), None)
+        self.assertEqual(status[0], "buttons_status")
+        self.assertFalse(status[1])
+        self.assertEqual(pickers["mouse_left"], ("mouse_left", "03000100", True))
+        self.assertEqual(len(pickers), len(buttons.BUTTONS))
+
+    def test_unknown_method_shows_raw_hex_and_stays_enabled(self):
+        info = buttons_info()
+        info["buttons"]["mouse_bottom"] = {
+            "name": "mouse_bottom",
+            "addr": buttons.button_addr("mouse_bottom"),
+            "method": bytes.fromhex("00010203"),
+            "fn": None,
+            "raw_hex": "00010203",
+        }
+        status, pickers = gui.buttons_render_plan(info, None)
+        self.assertEqual(pickers["mouse_bottom"], (None, "00010203", True))
+
+    def test_error_retains_last_known_and_disables(self):
+        status, pickers = gui.buttons_render_plan(buttons_info(), "boom")
+        self.assertEqual(status[0], "buttons_error")
+        self.assertTrue(status[1])
+        for name, _o in buttons.BUTTONS:
+            self.assertEqual(pickers[name][2], False)
+
+    def test_error_without_known_info_disables_everything(self):
+        status, pickers = gui.buttons_render_plan(None, "boom")
+        self.assertEqual(status[0], "buttons_error")
+        self.assertTrue(status[1])
+        for name, _o in buttons.BUTTONS:
+            self.assertEqual(pickers[name], (None, None, False))
+
+    def test_unknown_info_unknown_status(self):
+        status, pickers = gui.buttons_render_plan(None, None)
+        self.assertEqual(status[0], "buttons_unknown")
+        self.assertFalse(status[1])
+
+    def test_isolated_error_aggregates_in_status_and_disables_one(self):
+        info = {"buttons": {}, "errors": {"a": "x", "b": "y"}}
+        status, pickers = gui.buttons_render_plan(info, None)
+        self.assertEqual(status[0], "buttons_error")
+        self.assertTrue(status[1])
+        self.assertIn("+1", status[2]["error"])
+
+    def test_per_field_error_with_real_buttons_disables_only_that_one(self):
+        info = buttons_info({name: "mouse_left" for name, _o in buttons.BUTTONS})
+        # A broken field is absent from the payload (read_section isolates it
+        # into `errors`), so the picker must show raw-unknown disabled while
+        # every healthy button stays sensitive.
+        info["buttons"].pop("mouse_left")
+        info["errors"] = {"mouse_left": "short reply"}
+        status, pickers = gui.buttons_render_plan(info, None)
+        self.assertEqual(status[0], "buttons_error")
+        self.assertEqual(pickers["mouse_left"], (None, None, False))
+        for name, _o in buttons.BUTTONS:
+            if name != "mouse_left":
+                self.assertEqual(pickers[name][2], True)
+        self.assertIn("short reply", status[2]["error"])
+
+    def test_scroll_back_button_marks_backward(self):
+        info = buttons_info({name: "mouse_left" for name, _o in buttons.BUTTONS})
+        # The physical scroll-back button holds the shared 0bff00ff method;
+        # read_button decodes direction contextually, so the render plan must
+        # mark scroll_backward there and scroll_forward on the forward button.
+        info["buttons"]["mouse_scroll_back"]["method"] = bytes.fromhex("0bff00ff")
+        info["buttons"]["mouse_scroll_back"]["fn"] = buttons.method_name(
+            bytes.fromhex("0bff00ff"), "mouse_scroll_back"
+        )
+        info["buttons"]["mouse_scroll_forward"]["method"] = bytes.fromhex("0bff00ff")
+        info["buttons"]["mouse_scroll_forward"]["fn"] = buttons.method_name(
+            bytes.fromhex("0bff00ff"), "mouse_scroll_forward"
+        )
+        status, pickers = gui.buttons_render_plan(info, None)
+        self.assertEqual(status[0], "buttons_status")
+        self.assertEqual(pickers["mouse_scroll_back"][0], "scroll_backward")
+        self.assertEqual(pickers["mouse_scroll_forward"][0], "scroll_forward")
+
+    def test_status_count_is_dynamic(self):
+        status, _pickers = gui.buttons_render_plan(buttons_info(), None)
+        self.assertEqual(status[2]["n"], len(buttons.BUTTONS))
 
 
 if __name__ == "__main__":

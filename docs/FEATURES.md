@@ -93,13 +93,17 @@ are written (`set_param_choice`; user-initiated, `wake=True`):
 > 1.0–2.0, factory 0x01 = minimum). Definitive confirmation = observe an A Hub
 > write and diff the byte (pending, P9).
 
-### D. Button remap — ✅ addresses, ⚠️ codes
-Each key has an EEPROM field (format to validate) with the function code.
-On-device read (2026-08-10): left/middle/right=0x03, forward/back=0x03,
-DPI±=0x08, scroll fwd/back=0x0B, scroll right/left=0xFF, bottom=0x0A, BLE=0x03.
-1B codes are plausible (scroll 0xFF = off); a 2B read showed no consistent
-second-byte pattern (0x0624/0x0628 read back 0xFF), so the exact field size
-**stays open** until a write test (S8).
+### D. Button remap — ✅ addresses, ✅ codes (CONFIRMED 2026-08-12)
+Each key has a bank-0 EEPROM field storing a **4-byte "method"**
+(`<type><p1><p2><p3>`). CONFIRMED ON DEVICE (2026-08-12): all 12 readable
+buttons read back the exact A Hub `method` byte-for-byte (left=`03 00 01 00`,
+DPI+=`08 00 05 00`, scroll fwd=`0b ff 00 ff`, bottom=`0a 00 00 00`, BLE=
+`03 00 01 01` …), and a reversible write-test on 0x0634 (bottom) wrote
+`07 00 00 00` → re-read verified → restored `0a 00 00 00` (MATCH). The earlier
+"0xFF inconsistent" read at 0x0624/0x0628 is the 2nd byte `ff` of the scroll
+method, not an anomaly. Function codes come from the A Hub chunk
+`keyPosition-D9HhW_CA.js` (161 entries). The app remaps buttons in the
+"Botões" tab (implemented, story 4-1).
 
 | Key | EEPROM | Key | EEPROM |
 |---|---|---|---|
@@ -111,12 +115,16 @@ second-byte pattern (0x0624/0x0628 read back 0xFF), so the exact field size
 | Forward | `0x0614` | BLE | `0x0638` |
 | Back | `0x0618` | | |
 
-Functions available in the A Hub (`basicKeys`/`mediaKeys`): left, right, middle,
-scrolls, forward/back, DPI+ / DPI- / DPI+ cycle / DPI- cycle, DIY, **fire**,
-**sniper**, config switch, disable, media keys (sound, volume, player,
-calculator, copy/paste etc.), keyboard key, **combination of up to 3 keys** and
-**macro**. Numeric codes have **not been extracted yet** from the bundle
-(extract via minification when configuring in the A Hub and diffing a dump).
+Confirmed 4-byte methods (shipped in the picker): mouse buttons `03 00 01 00`
+(left), `03 00 04 00` (middle), `03 00 02 00` (right), `03 00 10 00` (forward),
+`03 00 08 00` (back); DPI `08 00 05 00` (+), `08 00 06 00` (−), `08 00 03 00`
+(cycle+), `08 00 04 00` (cycle−); scroll `0b ff 00 ff` (up/down share the
+method), `0c ff 00 ff` (left), `0c ff 01 ff` (right); functions `09 00 02 00`
+(fire), `09 00 01 00` (sniper), `0a 00 00 00` (DIY), `0a 00 02 00` (config
+switch), `07 00 00 00` (disable); media/window/edit `04 00 00 b6 …`, combos
+`02 …`. Keyboard keys (single HID usage byte), combos and macros are **gated**
+(not offered in the picker) until their write format is device-validated —
+their method derives from the bundle and needs a write test first.
 
 ### E. System / firmware — ✅ commands, ⚠️ flows
 | Item | Mechanism | Notes |
@@ -210,9 +218,10 @@ recorded here. When resuming, start from the end of the last marked phase.
 ### Phase 3 — Performance / parameters
 - [x] Performance modes (`0x08DC`): window tab with the 6 modes (radio per
       mode; applies to the active polling-rate slot). Implemented + unit-tested
-      (`performance.py`, `tests/test_performance.py`, 12 tests). On-device
-      validation pending: read the 7 slots, confirm the current rate slot and
-      that a write sticks (mouse must be awake).
+      (`performance.py`, `tests/test_performance.py`, 12 tests). **VALIDATED ON
+      THE REAL DEVICE (2026-08-11)**: factory table `[0,0,1,1,3,3,3]`; rate
+      `0x0880`=1 → slot 3; write + readback of slot 3 (1→4→1) restored; a
+      rate-code write is mirrored by `rpt_usb` (the tab re-renders).
 - [x] RF strategy (`0x08D8`, bits) + polling rate (map index→Hz) — story 3-2.
       The shared byte is exposed consistently (`read_rf`/`rf_state`: RF
       strengthen bit 0, low-power warning bit 1); the Desempenho tab shows the
@@ -249,12 +258,17 @@ recorded here. When resuming, start from the end of the last marked phase.
       and is restored exactly; bool semantics confirmed for motion/glass/DC).
 
 ### Phase 4 — Button remap
-- [ ] Extract the **numeric codes** of the functions from the bundle (hard:
-      minified bundle; tip: configure 1 key in the A Hub, dump before/after,
-      diff).
-- [ ] UI: "key → function" dialog (list from §2.D).
-- [ ] Write the key field (`0x0600`–`0x0638`) and confirm it works.
-- [ ] App business rule: **always keep at least 1 left button**.
+- [x] Extract the **numeric codes** of the functions from the bundle (the A Hub
+      lazy chunk `keyPosition-D9HhW_CA.js` download route worked — 161 entries;
+      the main bundle holds only i18n names).
+- [x] UI: "key → function" picker (the "Botões" window tab, list from §2.D).
+- [x] Write the key field (`0x0600`–`0x0638`) — **4-byte method**, read-back
+      verified; validated on the real device (2026-08-12, incl. the reversible
+      write-test on 0x0634).
+- [x] App business rule: **always keep at least 1 left button** (refused before
+      the write and inside `buttons.set_function`).
+- [ ] Keyboard keys / combos / macros in the picker (write formats derive from
+      the bundle and are gated until device-validated — Ask First).
 
 ### Phase 5 — System
 - [ ] Factory reset (`0xAD`) with a confirmation dialog.

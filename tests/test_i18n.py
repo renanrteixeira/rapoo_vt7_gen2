@@ -70,11 +70,23 @@ class I18nParityTest(unittest.TestCase):
 
     def test_status_format_placeholders(self):
         for code, lang in i18n.LANGS.items():
-            try:
-                lang["rf_status"].format(rf="x", low="y")
-                lang["perf_status"].format(hz=1000, name="x")
-                lang["rf_changed"].format(rf="x")
-                lang["param_changed"].format(param="x", state="on")
-                lang["param_error"].format(error="x")
-            except (KeyError, IndexError) as exc:
-                self.fail("locale %s placeholder mismatch: %s" % (code, exc))
+            formats = {
+                "rf_status": {"rf": "x", "low": "y"},
+                "rf_error": {"error": "x"},
+                "perf_status": {"hz": 1000, "name": "x"},
+                "perf_error": {"error": "x"},
+                "perf_rate_changed": {"hz": 1000},
+                "perf_changed": {"name": "x"},
+                "perf_mode_not_selectable": {"hz": 1000},
+                "rf_changed": {"rf": "x"},
+                "param_changed": {"param": "x", "state": "on"},
+                "param_error": {"error": "x"},
+                "param_more_errors": {"n": 2},
+            }
+            for key, kwargs in formats.items():
+                try:
+                    lang[key].format(**kwargs)
+                except (KeyError, IndexError, ValueError) as exc:
+                    self.fail(
+                        "locale %s placeholder mismatch in %r: %s" % (code, key, exc)
+                    )

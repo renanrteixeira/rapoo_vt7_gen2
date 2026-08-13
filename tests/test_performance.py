@@ -409,11 +409,109 @@ class MainRateTest(unittest.TestCase):
         self.assertEqual(refreshed, [4])
 
 
+class MainPerfTest(unittest.TestCase):
+    def _app(self, perf_info=None):
+        app = main.RapooApp.__new__(main.RapooApp)
+        app._monitor = FakeMonitor()
+        app._window = SimpleNamespace(
+            _lang="pt_BR",
+            get_perf_info=lambda: perf_info,
+            set_perf_error=lambda _msg: None,
+        )
+        return app
+
+    def test_on_set_perf_submits_mode_write_for_displayed_slot_with_wake(self):
+        app = self._app({"slot": 3, "mode": 1, "rf": None, "rf_error": None})
+        app._on_set_perf(4)
+        fn, on_done, on_error, wake = app._monitor.jobs[0]
+        self.assertTrue(wake)
+        self.assertTrue(callable(on_done))
+        result = fn(FakeDev())
+        # Writes to 0x08DC + displayed slot 3, not the live monitor rate.
+        self.assertEqual(result, {"slot": 3, "mode": 4})
+
+    def test_on_set_perf_targets_displayed_slot_not_live_rpt_usb(self):
+        # The monitor's rpt_usb lags after a rate change; the mode write must
+        # target the slot the window is showing, not the reported rate.
+        app = self._app({"slot": 5, "mode": 3, "rf": None, "rf_error": None})
+        app._on_set_perf(4)
+        fn = app._monitor.jobs[0][0]
+        dev = FakeDev()
+        result = fn(dev)
+        self.assertEqual(result, {"slot": 5, "mode": 4})
+        self.assertEqual(dev.writes, [((0x08E1), b"\x04")])
+
+    def test_on_set_perf_rejects_mode_not_selectable_in_slot(self):
+        errors = []
+        app = self._app({"slot": 0, "mode": 0, "rf": None, "rf_error": None})
+        app._perf_error = errors.append
+        app._on_set_perf(5)  # slot 0 only offers (0, 1)
+        self.assertEqual(app._monitor.jobs, [])
+        self.assertEqual(len(errors), 1)
+
+    def test_on_set_perf_falls_back_to_monitor_slot_when_tab_empty(self):
+        app = self._app(None)
+        app._monitor._rpt_usb = 129  # 8000 Hz -> slot 6
+        app._on_set_perf(4)
+        fn = app._monitor.jobs[0][0]
+        result = fn(FakeDev())
+        self.assertEqual(result, {"slot": 6, "mode": 4})
+
+    def test_perf_changed_refreshes_using_written_slot(self):
+        app = self._app(None)
+        refreshed = []
+
+        def refresh(slot=None):
+            refreshed.append(slot)
+
+        app._refresh_perf = refresh
+        with mock.patch.object(main.Notify.Notification, "new"):
+            app._perf_changed({"slot": 4, "mode": 3})
+        self.assertEqual(refreshed, [4])
+
+    def test_perf_changed_survives_out_of_range_mode_byte(self):
+        app = self._app(None)
+        app._refresh_perf = lambda slot=None: None
+        with mock.patch.object(main.Notify.Notification, "new") as m:
+            app._perf_changed({"slot": 3, "mode": 9})
+        self.assertEqual(m.call_count, 1)
+
+    def test_maybe_refresh_perf_retries_on_isolated_rf_error(self):
+        app = self._app({"slot": 3, "mode": 1, "rf": None, "rf_error": "boom"})
+        refreshed = []
+        app._refresh_perf = lambda slot=None: refreshed.append(slot)
+        app._maybe_refresh_perf()
+        self.assertEqual(len(refreshed), 1)
+
+    def test_maybe_refresh_perf_retries_when_tab_empty(self):
+        app = self._app(None)
+        refreshed = []
+        app._refresh_perf = lambda slot=None: refreshed.append(slot)
+        app._maybe_refresh_perf()
+        self.assertEqual(len(refreshed), 1)
+
+    def test_maybe_refresh_perf_skips_when_healthy(self):
+        app = self._app({"slot": 3, "mode": 1, "rf": {}, "rf_error": None})
+        refreshed = []
+        app._refresh_perf = lambda slot=None: refreshed.append(slot)
+        app._maybe_refresh_perf()
+        self.assertEqual(refreshed, [])
+
+
 class MainRfTest(unittest.TestCase):
     def _app(self):
         app = main.RapooApp.__new__(main.RapooApp)
         app._monitor = FakeMonitor()
+        app._window = SimpleNamespace(set_perf_error=lambda _msg: None)
         return app
+
+    def test_on_set_rf_rejects_unknown_field(self):
+        errors = []
+        app = self._app()
+        app._perf_error = errors.append
+        app._on_set_rf("bogus", True)
+        self.assertEqual(app._monitor.jobs, [])
+        self.assertEqual(len(errors), 1)
 
     def test_on_set_rf_submits_masked_write_with_wake(self):
         app = self._app()

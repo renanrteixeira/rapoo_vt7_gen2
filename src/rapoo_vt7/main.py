@@ -8,7 +8,7 @@ from gi.repository import GLib, Gio, Gtk, Notify
 
 from .battery import BatteryMonitor
 from .config import load_language, save_language
-from . import dpi, parameters, performance as perf
+from . import buttons, dpi, parameters, performance as perf
 from .gui import BatteryWindow
 from .i18n import LANGS
 from .icons import DEFAULT_ICON_DIR, render_all
@@ -59,6 +59,7 @@ class RapooApp(Gtk.Application):
         self._dpi_reading = False
         self._perf_loaded = False
         self._params_loaded = False
+        self._buttons_loaded = False
         self._last_report_dpi = None
         self._app_report = None  # last (gear, x) written by the app — report
         # echo of an app write is not re-notified
@@ -104,6 +105,7 @@ class RapooApp(Gtk.Application):
             on_set_param=self._on_set_param,
             on_set_rate=self._on_set_rate,
             on_set_param_choice=self._on_set_param_choice,
+            on_set_button=self._on_set_button,
         )
 
         self._monitor = BatteryMonitor(
@@ -154,6 +156,9 @@ class RapooApp(Gtk.Application):
         if not self._params_loaded:
             self._params_loaded = True
             self._refresh_params()
+        if not self._buttons_loaded:
+            self._buttons_loaded = True
+            self._refresh_buttons()
         th = self._alerts.threshold(percent)
         if th is not None:
             lang = LANGS[self._window._lang]
@@ -174,6 +179,7 @@ class RapooApp(Gtk.Application):
             GLib.idle_add(self._maybe_refresh_dpi)
             GLib.idle_add(self._maybe_refresh_perf)
             GLib.idle_add(self._maybe_refresh_params)
+            GLib.idle_add(self._maybe_refresh_buttons)
 
     # --- menu actions (GTK thread) -> device tasks (monitor thread) ---
 
@@ -284,9 +290,24 @@ class RapooApp(Gtk.Application):
         return _perf_slot_from_monitor(self._monitor)
 
     def _on_set_perf(self, mode):
-        """Performance radio toggled: set the mode for the active rate slot."""
+        """Performance radio toggled: set the mode for the DISPLAYED slot.
+
+        The slot the window is showing (from the last perf read) is the target
+        — not the live monitor `_rpt_usb`, which lags the reported rate after a
+        rate change. Only modes available in that slot are accepted.
+        """
+        info = self._window.get_perf_info()
+        if info is not None and isinstance(info.get("slot"), int):
+            slot = info["slot"]
+        else:
+            slot = self._current_perf_slot()
+        if not isinstance(mode, int) or mode not in perf.selectable_modes(slot):
+            self._perf_error(
+                ValueError("mode %r not available at %d Hz" % (mode, perf.RATE_HZ[slot]))
+            )
+            return
         self._monitor.submit(
-            lambda dev: perf.set_mode(dev, self._current_perf_slot(), mode),
+            lambda dev: perf.set_mode(dev, slot, mode),
             on_done=lambda res: GLib.idle_add(self._perf_changed, res),
             on_error=self._perf_error,
             wake=True,
@@ -300,6 +321,9 @@ class RapooApp(Gtk.Application):
         by re-reading; a mismatch surfaces an error instead of accepting the
         change. User-initiated: attempted even while the mouse is asleep.
         """
+        if field not in ("rf", "lowpow"):
+            self._perf_error(ValueError("unknown RF field %r" % field))
+            return
         if field == "lowpow":
             fn = lambda dev: perf.write_low_power_warn(dev, enabled)
         else:
@@ -396,6 +420,88 @@ class RapooApp(Gtk.Application):
     def _param_error(self, exc):
         GLib.idle_add(self._window.set_params_error, str(exc))
 
+    def _on_set_button(self, name, fid):
+        """Button-combo changed: assign a confirmed function method to the
+        button, verified by re-reading (a mismatch rejects the change).
+        User-initiated: attempted even while the mouse is asleep. The ≥1
+        left-click rule is enforced twice: before submitting (last-known
+        state, fast refusal) and inside `buttons.set_function` (live reads,
+        authoritative)."""
+        if fid not in buttons.METHODS:
+            self._button_error(
+                ValueError(LANGS[self._window._lang]["button_unknown_fn"].format(fn=fid))
+            )
+            return
+        info = self._window.get_buttons_info()
+        if info is not None and not info.get("errors"):
+            state = info["buttons"].get(name)
+            if state is not None and buttons.is_left_click(state["method"]):
+                method = buttons.METHODS[fid]
+                if not buttons.is_left_click(method):
+                    others_left = any(
+                        other != name
+                        and other in info["buttons"]
+                        and buttons.is_left_click(info["buttons"][other]["method"])
+                        for other, _offset in buttons.BUTTONS
+                    )
+                    if not others_left:
+                        self._button_error(
+                            ValueError(
+                                LANGS[self._window._lang]["button_no_left"]
+                            )
+                        )
+                        return
+        self._monitor.submit(
+            lambda dev: buttons.set_function(dev, name, fid),
+            on_done=lambda res: GLib.idle_add(self._button_changed, res),
+            on_error=self._button_error,
+            wake=True,
+        )
+
+    def _button_changed(self, state):
+        """Runs on the GTK thread after a button write; notifies + re-reads."""
+        lang = LANGS[self._window._lang]
+        Notify.Notification.new(
+            "Rapoo VT7",
+            lang["button_changed"].format(
+                button=lang["btn_" + state["name"]],
+                fn=lang["fn_" + state["fn"]],
+            ),
+            "dialog-information",
+        ).show()
+        self._refresh_buttons()
+
+    def _button_error(self, exc):
+        lang = LANGS[self._window._lang]
+        if isinstance(exc, buttons.NoLeftClickError):
+            msg = lang["button_no_left"]
+        elif isinstance(exc, ValueError) and str(exc).startswith("unknown function"):
+            msg = lang["button_unknown_fn"].format(fn=exc.args[0])
+        else:
+            msg = str(exc)
+        GLib.idle_add(self._window.set_buttons_error, msg)
+
+    def _refresh_buttons(self):
+        def done(info):
+            GLib.idle_add(self._window.update_buttons, info)
+
+        def err(exc):
+            GLib.idle_add(self._window.set_buttons_error, str(exc))
+
+        self._monitor.submit(buttons.read_section, on_done=done, on_error=err)
+
+    def _maybe_refresh_buttons(self):
+        """GTK thread. Re-read the buttons section when it is not in a healthy
+        loaded state: empty (mouse asleep at startup), in a section-level
+        error (`has_buttons` covers both), or carrying per-field errors. Runs
+        on connected/open events, so by then the mouse is awake."""
+        if not self._window.has_buttons():
+            self._refresh_buttons()
+            return
+        info = self._window.get_buttons_info()
+        if info is not None and info.get("errors"):
+            self._refresh_buttons()
+
     def _refresh_params(self):
         """Re-reads every §C parameter into the window (per-field errors are
         isolated inside `parameters.read_section`)."""
@@ -419,14 +525,19 @@ class RapooApp(Gtk.Application):
     def _perf_changed(self, result):
         """Runs on the GTK thread after a mode write."""
         lang = LANGS[self._window._lang]
+        mode = result["mode"]
+        if isinstance(mode, int) and 0 <= mode < perf.PERF_MODE_COUNT:
+            mode_name = lang["perf_mode_%d" % mode]
+        else:
+            mode_name = lang["perf_mode_unknown"]
         Notify.Notification.new(
             "Rapoo VT7",
-            lang["perf_changed"].format(
-                name=lang["perf_mode_%d" % result["mode"]]
-            ),
+            lang["perf_changed"].format(name=mode_name),
             "dialog-information",
         ).show()
-        self._refresh_perf()
+        # Re-read using the slot that was actually written (not the live
+        # monitor `_rpt_usb`, which lags) so the tab stays in sync.
+        self._refresh_perf(slot=result["slot"])
 
     def _refresh_perf(self, slot=None):
         """Re-reads the mode of the active rate slot into the window.
@@ -453,8 +564,10 @@ class RapooApp(Gtk.Application):
 
     def _maybe_refresh_perf(self):
         """GTK thread. When the perf tab is still empty (mouse asleep at
-        startup) re-read the mode — the mouse is awake now."""
-        if self._window.get_perf_info() is None:
+        startup) or an isolated RF read failed, re-read — the mouse is awake
+        now and the RF state was never shown."""
+        info = self._window.get_perf_info()
+        if info is None or info.get("rf_error"):
             self._refresh_perf()
 
     def _refresh_dpi(self):

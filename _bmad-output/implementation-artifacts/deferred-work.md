@@ -54,3 +54,38 @@ modify existing entries; only append.
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-3-mouse-parameters-toggles.md`
   summary: The battery-tab product image (`assets/mouse2.png`, `gui.py` `_MOUSE_IMAGE_PATH`/`_mouse_pixbuf`/`_draw_image_fit`) overclaims install safety (the three-dirname-up path resolves into site-packages, where assets are never installed), falls back to `draw_mouse` silently with no log, leaves `scale_simple`'s None return unguarded, and has no headless test coverage; it is also undocumented in CONTEXT.md/FEATURES.md.
   evidence: gui.py:18-49 comment says "so it also works from an install"; installed packages have no `assets/` dir; introduced with the mouse2.png change, surfaced by the 3-3 review (not this story's scope).
+
+## Deferred from: code review of spec-3-1-performance-modes (08-12-2026)
+
+- Spec-3-1 frozen text contradicts the shipped app: the polling-rate UI (story 3-2) and §C params (story 3-3) are implemented in this file set but owned by their own specs; spec-3-1's "Never" clauses and empty change log were never reconciled. Record the cross-story split in spec-3-1's change log.
+- External rate/mode/RF changes (e.g. via the A Hub) are never detected — `_on_report` (main.py:118) only watches DPI; rate/mode/RF refresh happens only on state events or app actions. Report-7 driven re-read is a future enhancement.
+- Production `print()` debug noise in `_on_report`/`_on_state`/`_refresh_dpi` (main.py:125,167,467-470) — cosmetic; convert to `logging` in a cleanup pass.
+- Rate/mode tables are duplicated constants with no single source of truth — `RATE_HZ`/`RATE_INDEX_BY_CODE`/`PERF_SELECTABLE` and the `perf_mode_*` i18n keys must be manually kept in sync; a missing key raises KeyError at render (performance.py:40).
+- `_on_param_scale` grid-snap duplicates `params_render_plan` snapping untested in the GUI (gui.py:567 vs gui.py:62) — the two could drift (round vs floor).
+- `rate_index_from_code(0)` returns slot 0 instead of `SLOT_DEFAULT` when a stray `_rpt_usb` value of 0 arrives — the raw-index fallback overlaps the valid code space (performance.py:159).
+
+## Deferred from: code review of spec-3-2-rf-polling-rate (08-12-2026)
+
+- Default `main()` probe path has no try/except — battery/firmware probes raise a raw traceback when the mouse is asleep; `dump_main`/`status_main` handle it, the default flow does not. (probe.py:516)
+- `battery_probe`/`firmware_probe` index the reply without a length guard — a short/empty reply (`06 00…` heartbeat) raises `IndexError`; `firmware_probe` also hard-codes PID bytes 6/7 instead of `protocol` offsets. (probe.py:27,45)
+- `Field.encode` string branch truncates without re-appending NUL and can split a multi-byte UTF-8 char at `size` — `config_name` (16 B) could be written unterminated. (settings.py:37)
+- Address `0x0884` is registered twice with conflicting meanings — `settings.mouse_slight` (sensor param, "do not edit") vs `parameters.lift_off` (1.0–2.0 mm slider); `probe --status` prints the same byte under two names and FEATURES.md §2.B ("don't edit") contradicts §2.C (editable slider). Same tension for `0x0885` (motion sync). Cross-story (3-3) registry/doc tension. (settings.py:89)
+- `dpi_x_list`/`dpi_y_list` are 7-slot × 2-byte tables but modeled as scalar 2-byte fields — `--status` decodes only slot 0; the registry cannot read/write whole tables. (settings.py:81)
+- `probe.py` default flow uses the private `dev._read_report(0.5)` while `capture_report7` uses the public `dev.read_report(...)` — inconsistent device API. (probe.py:524)
+- `dump_main`/`status_main` do no device-identity check (PID `0x4613`/config interface/prefix) before reading EEPROM and writing the baseline — a wrong device that answers `0xA4` yields a garbage baseline; the JSON records only `dev.path`. (probe.py:446)
+- `dpi_enable_gear` (validated as count-1 0..6) is classified as a generic bit-toggle field — `--status` prints a bit breakdown contradicting the count semantics in the registry comment. (probe.py:132)
+- `Field.encode` bool coerces `1 if value else 0` before the `isinstance(int)` check — any truthy non-int (e.g. `"yes"`, `2`) is silently encoded as 1 rather than rejected. (settings.py:44)
+- `test_status_button_hypothesis_1b_vs_2b` asserts `as_2b_le == (as_1b & 0xFF) | 0x0100`, a tautology of the `FakeDev` address-derived bytes — it does not exercise the 1B-vs-2B interpretation. (test_probe.py:211)
+- `query()`, `battery_probe`, `firmware_probe`, `work_mode_probe`, `eeprom_probe` and the default `main()` path have zero test coverage — exactly where the unsafe reply indexing lives. (test_probe.py)
+- Default `main()` prints `"\nOK"` and returns 0 unconditionally — a partial non-raising failure still exits 0, misleading scripts that check the exit code. (probe.py:529)
+- `Field.range` on DPI fields does not enforce the 50-step grid — an off-grid DPI value passes the settings codec (the `dpi.py` write path does enforce it; latent only). (settings.py:81)
+- `write_baseline` leaks the mkstemp fd if `os.fdopen` raises before the `with` block. (probe.py:115)
+- `build_hypothesis` does `raw_by_addr[shared_addr]` unguarded — a `KeyError` if the RF fields are ever dropped from `settings.FIELDS`; safe today (both registered). (probe.py:223)
+- FEATURES.md §2.C header claims the whole block "✅ writable (write-test 2026-08-11)" while Low power `0x08C6/0x08AC` is "function unresolved → read-only" and Wave correction has "no confirmed address" — the doc does not separate byte-writability from resolved semantics. (FEATURES.md §2.C)
+- Rate-selector UI + `set_rate` write path go beyond the spec's "state/exposure only" Design Note (Ask First trigger) — already shipped, readback-verified, slot-mapped and validated on device; a retrospective scope note, not a defect.
+
+## Deferred from: code review of spec-4-1-button-remap (08-12-2026)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-1-button-remap.md`
+  summary: `_on_set_rf` surfaces the hardcoded English `"unknown RF field %r"` via `_perf_error`/`_rf_error` instead of a localized i18n string (all other user strings in this story were localized; this one lives in story 3-2's RF handler).
+  evidence: main.py `_on_set_rf` raises `ValueError("unknown RF field %r" % name)`; surfaced by the 4-1 blind-hunter review; out of 4-1 scope (RF is story 3-2).

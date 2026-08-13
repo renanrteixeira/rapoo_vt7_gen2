@@ -11,7 +11,7 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GLib, Gtk, Gdk, GdkPixbuf
 
-from . import dpi, i18n, parameters, performance as perf
+from . import buttons, dpi, i18n, parameters, performance as perf
 
 # Product render shown in the battery tab. Resolved relative to this package
 # (repo layout: <root>/assets/mouse2.png) so it also works from an install.
@@ -126,6 +126,45 @@ def params_status_text(t, info, error):
     return "", False
 
 
+def buttons_render_plan(info, error):
+    """Pure per-button combo plan (no GTK, headless-testable).
+
+    `info` is a `buttons.read_section` payload (or None) and `error` a
+    section-level error string (or None). Returns (status, pickers) where
+    `status` is (text, is_error) and `pickers` maps button name ->
+    (current_fn_or_None, raw_hex_or_None, sensitive). On error the last-known
+    values are retained (never nulled) and every picker is disabled.
+    """
+    if error is not None:
+        status = ("buttons_error", True, {"error": error})
+    elif info is None:
+        status = ("buttons_unknown", False, {})
+    else:
+        errs = info.get("errors", {})
+        if errs:
+            first = next(iter(errs.values()))
+            extra = len(errs) - 1
+            if extra > 0:
+                text = ("buttons_error", True, {"error": first + "+%d" % extra})
+            else:
+                text = ("buttons_error", True, {"error": first})
+            status = text
+        else:
+            status = ("buttons_status", False, {"n": len(buttons.BUTTONS)})
+    pickers = {}
+    for name, _offset in buttons.BUTTONS:
+        state = info["buttons"].get(name) if info is not None else None
+        if state is None:
+            pickers[name] = (None, None, False)
+        else:
+            pickers[name] = (
+                state["fn"],
+                state["raw_hex"],
+                error is None and name not in info.get("errors", {}),
+            )
+    return status, pickers
+
+
 def perf_rate_state(info, error):
     """Pure polling-rate radio plan: (active_slot_or_None, sensitive).
 
@@ -157,6 +196,17 @@ def rf_radio_state(info, error, rf_error):
     if rf_error is not None or rf is None:
         return (bool(rf["rf_strengthen_switch"]) if rf else None), False
     return bool(rf["rf_strengthen_switch"]), True
+
+
+def perf_mode_name(t, mode):
+    """Localized label of a performance-mode id, with a safe fallback.
+
+    The device may hold a foreign/corrupt mode byte outside the valid 0..5
+    range (`read_mode` returns it unvalidated); rendering must never KeyError.
+    """
+    if isinstance(mode, int) and 0 <= mode < perf.PERF_MODE_COUNT:
+        return t("perf_mode_%d" % mode)
+    return t("perf_mode_unknown")
 
 
 def draw_mouse(ctx, w, h):
@@ -258,6 +308,7 @@ class BatteryWindow:
         on_set_param=None,
         on_set_rate=None,
         on_set_param_choice=None,
+        on_set_button=None,
     ):
         self._lang = lang if lang in i18n.LANGS else "pt_BR"
         self._on_lang_change = on_lang_change
@@ -270,6 +321,7 @@ class BatteryWindow:
         self._on_set_param = on_set_param
         self._on_set_rate = on_set_rate
         self._on_set_param_choice = on_set_param_choice
+        self._on_set_button = on_set_button
         self._known = False
         self._asleep = False
         self._last = None
@@ -284,6 +336,10 @@ class BatteryWindow:
         self._rate_radio = []
         self._params = None
         self._params_error = None
+        self._buttons = None
+        self._buttons_error = None
+        self._buttons_loading = False
+        self._button_combos = {}
 
         if application is not None:
             self._win = Gtk.ApplicationWindow(application=application)
@@ -371,6 +427,18 @@ class BatteryWindow:
         self._tab_params = Gtk.Label(label=self._t("tab_params"))
         self._notebook.append_page(page4_scroll, self._tab_params)
         self._build_params_section(page4)
+
+        page5_scroll = Gtk.ScrolledWindow()
+        page5_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page5 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        page5.set_margin_top(16)
+        page5.set_margin_bottom(16)
+        page5.set_margin_start(16)
+        page5.set_margin_end(16)
+        page5_scroll.add(page5)
+        self._tab_buttons = Gtk.Label(label=self._t("tab_buttons"))
+        self._notebook.append_page(page5_scroll, self._tab_buttons)
+        self._build_buttons_section(page5)
         self._render()
 
     def _t(self, key):
@@ -558,6 +626,114 @@ class BatteryWindow:
                 self._param_box.pack_start(row, False, False, 0)
         vbox.pack_start(self._param_box, False, False, 0)
 
+    def _build_buttons_section(self, vbox):
+        # Button remap: a combo per physical button with the confirmed 4-byte
+        # functions. The left-click rule (≥1 left button) is enforced inside
+        # `buttons.set_function`, so the pickers can offer everything.
+        self._buttons_title = Gtk.Label()
+        self._buttons_title.set_markup(
+            "<b>%s</b>" % GLib.markup_escape_text(self._t("buttons_section"))
+        )
+        self._buttons_title.set_halign(Gtk.Align.CENTER)
+        vbox.pack_start(self._buttons_title, False, False, 0)
+
+        self._buttons_status = Gtk.Label()
+        self._buttons_status.set_halign(Gtk.Align.CENTER)
+        self._buttons_status.set_line_wrap(True)
+        vbox.pack_start(self._buttons_status, False, False, 2)
+
+        self._buttons_grid = Gtk.Grid(column_spacing=8, row_spacing=4)
+        self._buttons_grid.set_margin_top(4)
+        vbox.pack_start(self._buttons_grid, False, False, 0)
+
+    def _rebuild_buttons(self):
+        self._buttons_loading = True
+        try:
+            self._render_buttons_locked()
+        finally:
+            self._buttons_loading = False
+
+    def _render_buttons_locked(self):
+        status, pickers = buttons_render_plan(self._buttons, self._buttons_error)
+        key, is_error, fmt = status
+        if is_error:
+            self._buttons_status.set_markup(
+                "<span color='red'>%s</span>"
+                % GLib.markup_escape_text(self._t(key).format(**fmt))
+            )
+        else:
+            self._buttons_status.set_text(self._t(key).format(**fmt))
+
+        for child in self._buttons_grid.get_children():
+            self._buttons_grid.remove(child)
+        self._button_combos = {}
+        if self._buttons is not None:
+            # On error the last-known values stay shown (never nulled); only
+            # the pickers are disabled until the next successful read.
+            self._render_buttons_pickers(pickers)
+
+    def _render_buttons_pickers(self, pickers):
+        """Rebuilds the per-button combos. Each combo lists every confirmed
+        function plus the raw hex when the current method is unknown; the
+        marked entry is the button's current function."""
+        active = self._buttons_error is not None
+        for i, (name, _offset) in enumerate(buttons.BUTTONS):
+            lbl = Gtk.Label(label=self._t("btn_" + name))
+            lbl.set_halign(Gtk.Align.START)
+            combo = Gtk.ComboBoxText()
+            current, raw_hex, sensitive = pickers[name]
+            for fid in buttons.METHODS:
+                combo.append(fid, self._t("fn_" + fid))
+            if current is not None and current not in buttons.METHODS:
+                # Decode-only current (e.g. the BLE left-click variant): shown
+                # as a labelled row but not a writable option — re-selecting
+                # it is a no-op in _on_button_changed.
+                combo.append(current, self._t("fn_" + current))
+                combo.set_active_id(current)
+            elif current is None and raw_hex is not None:
+                combo.append("__raw__", self._t("button_raw").format(hex=raw_hex))
+                combo.set_active_id("__raw__")
+            else:
+                combo.set_active_id(current)
+            combo.set_sensitive(not active and sensitive)
+            combo.connect("changed", self._on_button_changed, name)
+            self._button_combos[name] = combo
+            self._buttons_grid.attach(lbl, 0, i, 1, 1)
+            self._buttons_grid.attach(combo, 1, i, 1, 1)
+        self._buttons_grid.show_all()
+
+    def _on_button_changed(self, combo, name):
+        if self._buttons_loading:
+            return
+        if not combo.get_active() or not self._on_set_button:
+            return
+        fid = combo.get_active_id()
+        if fid == "__raw__":
+            return
+        if fid not in buttons.METHODS:
+            # Decode-only row (BLE left-click variant, gated combos): shows the
+            # current function but is not a writable option.
+            return
+        state = self._buttons["buttons"].get(name)
+        if state is not None and fid == state["fn"]:
+            return
+        self._on_set_button(name, fid)
+
+    def update_buttons(self, info):
+        self._buttons = info
+        self._buttons_error = None
+        self._rebuild_buttons()
+
+    def set_buttons_error(self, message):
+        self._buttons_error = message
+        self._rebuild_buttons()
+
+    def get_buttons_info(self):
+        return self._buttons
+
+    def has_buttons(self):
+        return self._buttons is not None and self._buttons_error is None
+
     def _on_param_toggled(self, btn, name):
         if self._perf_loading:
             return
@@ -594,10 +770,12 @@ class BatteryWindow:
         if btn.get_active() and self._on_set_rate:
             self._on_set_rate(hz)
 
-    def _on_rf_toggled(self, *args):
+    def _on_rf_toggled(self, btn, *args):
         if self._perf_loading:
             return
-        if self._on_set_rf:
+        # A radio group fires "toggled" on BOTH radios per click (the one
+        # turning off and the one turning on); only act on the newly active.
+        if btn.get_active() and self._on_set_rf:
             self._on_set_rf("rf", self._rf_radio[1].get_active())
 
     def _on_rf_low_toggled(self, btn):
@@ -607,6 +785,14 @@ class BatteryWindow:
             self._on_set_rf("lowpow", btn.get_active())
 
     def update_perf(self, info):
+        if info is not None and info.get("rf_error") and info.get("rf") is None:
+            old = self._perf or {}
+            if old.get("rf") is not None:
+                # Isolated RF-read error: keep the last-known RF state so the
+                # radio pair / low-power checkbox don't blank out (the mode and
+                # rate sections are still valid). Never null it.
+                info = dict(info)
+                info["rf"] = old["rf"]
         self._perf = info
         self._perf_error = None
         self._render_perf()
@@ -643,12 +829,23 @@ class BatteryWindow:
             elif self._perf is None:
                 self._perf_status.set_text(self._t("perf_unknown"))
             else:
+                selectable = perf.selectable_modes(self._perf["slot"])
                 self._perf_status.set_text(
                     self._t("perf_status").format(
                         hz=perf.RATE_HZ[self._perf["slot"]],
-                        name=self._t("perf_mode_%d" % self._perf["mode"]),
+                        name=perf_mode_name(self._t, self._perf["mode"]),
                     )
                 )
+                if self._perf["mode"] not in selectable:
+                    # Mode byte is valid but not offered at this rate slot
+                    # (e.g. after a rate change): explain why the marked radio
+                    # is disabled and how to fix it.
+                    hint = self._t("perf_mode_not_selectable").format(
+                        hz=perf.RATE_HZ[self._perf["slot"]]
+                    )
+                    self._perf_status.set_tooltip_text(hint)
+                else:
+                    self._perf_status.set_tooltip_text("")
             for i, radio in enumerate(self._perf_radio):
                 radio.set_active(self._perf is not None and i == self._perf["mode"])
                 if self._perf is not None and self._perf_error is None:
@@ -695,7 +892,7 @@ class BatteryWindow:
                 radio.set_active(rf_active is not None and i == int(rf_active))
                 radio.set_sensitive(rf_sensitive)
             self._rf_lowpow.set_active(
-                rf is not None and rf_error is None and rf["low_power_warn_switch"]
+                rf is not None and rf["low_power_warn_switch"]
             )
             self._rf_lowpow.set_sensitive(
                 self._perf_error is None and rf_error is None and rf is not None
@@ -939,6 +1136,7 @@ class BatteryWindow:
             self._tab_dpi.set_text(self._t("tab_dpi"))
             self._tab_perf.set_text(self._t("tab_perf"))
             self._tab_params.set_text(self._t("tab_params"))
+            self._tab_buttons.set_text(self._t("tab_buttons"))
             self._dpi_title.set_markup(
                 "<b>%s</b>" % GLib.markup_escape_text(self._t("dpi_section"))
             )
@@ -955,11 +1153,16 @@ class BatteryWindow:
             )
             for i, radio in enumerate(self._rate_radio):
                 radio.set_label("%d Hz" % perf.RATE_HZ[i])
+            for i, radio in enumerate(self._perf_radio):
+                radio.set_label(self._t("perf_mode_%d" % i))
             self._rf_radio[0].set_label(self._t("rf_radio_adaptive"))
             self._rf_radio[1].set_label(self._t("rf_radio_full"))
             self._rf_lowpow.set_label(self._t("rf_low_toggle"))
             self._param_title.set_markup(
                 "<b>%s</b>" % GLib.markup_escape_text(self._t("param_section"))
+            )
+            self._buttons_title.set_markup(
+                "<b>%s</b>" % GLib.markup_escape_text(self._t("buttons_section"))
             )
             for name, cb in self._param_check.items():
                 cb.set_label(self._t("param_" + name))
@@ -969,6 +1172,7 @@ class BatteryWindow:
                     lbl.set_tooltip_text(self._t("param_low_power_tt"))
                 if name in self._param_readonly:
                     val.set_tooltip_text(self._t("param_read_only"))
+            self._rebuild_buttons()
             self._render()
             self._render_dpi_widgets()
             self._render_perf()
