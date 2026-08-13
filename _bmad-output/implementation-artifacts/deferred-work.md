@@ -89,3 +89,15 @@ modify existing entries; only append.
 - source_spec: `_bmad-output/implementation-artifacts/spec-4-1-button-remap.md`
   summary: `_on_set_rf` surfaces the hardcoded English `"unknown RF field %r"` via `_perf_error`/`_rf_error` instead of a localized i18n string (all other user strings in this story were localized; this one lives in story 3-2's RF handler).
   evidence: main.py `_on_set_rf` raises `ValueError("unknown RF field %r" % name)`; surfaced by the 4-1 blind-hunter review; out of 4-1 scope (RF is story 3-2).
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-1-button-remap.md`
+  summary: The RF/desempenho code swept into the 4-1 diff (`_on_rf_toggled` double-submit guard, `update_perf` RF last-known retention, `_maybe_refresh_perf` RF-error retry, `perf_mode_name` fallback) ships with no test pinning the guards — ownership is stories 3-2/3-3, which own their own review/fix loops.
+  evidence: verification-gap reviewer found zero references to `_on_rf_toggled`/`update_perf`/`perf_mode_name` in tests/; these behaviors belong to the 3-2/3-3 change logs already recorded in this same diff.
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-1-button-remap.md`
+  summary: `set_function` does not enforce the "no write before the baseline exists" golden rule before writing EEPROM — a codebase-wide gap shared by every write path (dpi/parameters/performance), not a 4-1 regression.
+  evidence: buttons.py `set_function` calls `write_eeprom_verify` with no baseline-existence guard; the only baseline reference in the tree is a comment in settings.py:15.
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-1-button-remap.md`
+  summary: `probe.py build_checks` rate-mirror reads `fields["mouse_report"]["value"]` unguarded — a KeyError if the field were dropped/renamed kills the whole `--status` diagnostic (story 1-3 probe code).
+  evidence: probe.py:352 `fields["mouse_report"]["value"]`; same pattern as the previously-flagged `raw_by_addr[shared_addr]` at probe.py:225.
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-1-button-remap.md`
+  summary: A `write_eeprom_verify` read-back timeout after the write has landed surfaces an error although the button was already remapped on-device — inherent to the verify-after-write pattern used across the app (device.py), not 4-1-specific.
+  evidence: buttons.py:247 `dev.write_eeprom_verify`; device.py:259-267 raises on mismatch or returns the readback; a timeout in `query` raises CommandTimeout before the mismatch check can run.

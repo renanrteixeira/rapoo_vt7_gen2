@@ -21,6 +21,7 @@ without offering them.
 """
 
 from . import protocol
+from .device import CommandTimeout
 
 # (name, bank0 offset) of every physical button, in address order.
 BUTTONS = (
@@ -208,13 +209,18 @@ def _other_is_left(dev, name):
     left elsewhere allows the remap away from left-click)."""
     try:
         return is_left_click(read_button(dev, name)["method"])
-    except ValueError:
+    except (ValueError, CommandTimeout, OSError):
         return False
 
 
 class NoLeftClickError(ValueError):
     """The ≥1-left-click rule refused a remap (no other left-click button).
     The UI translates this into a localized message."""
+
+
+class UnknownFunctionError(ValueError):
+    """`set_function` received a function id that is not in `METHODS`. The UI
+    translates this into a localized message."""
 
 
 def set_function(dev, name, fn_id, keep_left=True):
@@ -227,7 +233,7 @@ def set_function(dev, name, fn_id, keep_left=True):
     another button is already left-click-capable.
     """
     if fn_id not in METHODS:
-        raise ValueError("unknown function %r" % fn_id)
+        raise UnknownFunctionError(fn_id)
     if name not in _BUTTON_BY_NAME:
         raise ValueError("unknown button %r" % name)
     addr = _addr(_BUTTON_BY_NAME[name])

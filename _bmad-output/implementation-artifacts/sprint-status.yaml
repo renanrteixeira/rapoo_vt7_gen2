@@ -44,13 +44,13 @@ development_status:
   epic-3-retrospective: optional
 
   # Phase 4 — Button remap (CAP-7) — S8
-  epic-4: in-progress
-  4-1-button-remap: review
+  epic-4: done
+  4-1-button-remap: done
   epic-4-retrospective: optional
 
   # Phase 5 — System operations (CAP-8) — S9
-  epic-5: backlog
-  5-1-system-operations: backlog
+  epic-5: in-progress
+  5-1-system-operations: in-progress
   epic-5-retrospective: optional
 
 action_items:
