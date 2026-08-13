@@ -7,6 +7,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from src.rapoo_vt7 import buttons as button_mod
 from src.rapoo_vt7 import i18n, parameters, protocol, settings
 from src.rapoo_vt7.device import RapooDevice, CommandTimeout
 
@@ -157,13 +158,12 @@ def button_fields():
 def build_status(dev, report7_window=6.0):
     """Reads every registered EEPROM field (settings.FIELDS) and returns a
     JSON-ready dict: per-field addr/raw/decoded value, the format-hypothesis
-    block (2B button fields 1B-vs-2B, shared 0x08D8 bit mask) and the
+    block (4-byte button methods, shared 0x08D8 bit mask) and the
     passive-report-7 cross-validation section. Raises CommandTimeout if the
     mouse does not answer and ValueError on a short reply."""
-    button_addrs = {addr for _, addr in button_fields()}
     by_addr = {}
     for name, field in settings.FIELDS.items():
-        size = max(field.size, 2) if field.addr in button_addrs else field.size
+        size = field.size
         if field.addr not in by_addr:
             by_addr[field.addr] = size
         elif size > by_addr[field.addr]:
@@ -201,22 +201,23 @@ def build_status(dev, report7_window=6.0):
 
 
 def build_hypothesis(raw_by_addr):
-    """Emits the format hypotheses: the 2B button fields (0x0600-0x0638)
-    print both the 1B and 2B LE interpretations, the shared 0x08D8 byte
-    (RF strategy + low-power warning) prints a bit breakdown, the toggle
-    fields print a bit breakdown, and every Section-C mouse parameter prints
-    its confirmed value semantics (bool toggle vs read-only raw byte). Uses
-    the bytes already read by build_status, so no field is read twice."""
+    """Emits the format hypotheses: the 4-byte button fields (0x0600-0x0638)
+    print the raw method plus its decoded A Hub function (or hex when
+    unknown), the shared 0x08D8 byte (RF strategy + low-power warning) prints
+    a bit breakdown, the toggle fields print a bit breakdown, and every
+    Section-C mouse parameter prints its confirmed value semantics (bool
+    toggle vs read-only raw byte). Uses the bytes already read by
+    build_status, so no field is read twice."""
     buttons = []
     for name, addr in button_fields():
-        raw = raw_by_addr[addr][:2]
+        method = raw_by_addr[addr][:4]
         buttons.append(
             {
                 "name": name,
                 "addr": "0x{:04X}".format((addr[1] << 8) | addr[0]),
-                "raw": raw.hex().upper(),
-                "as_1b": raw[0],
-                "as_2b_le": raw[0] | (raw[1] << 8),
+                "raw": method.hex().upper(),
+                "fn": button_mod.method_name(method, name),
+                "left_click": button_mod.is_left_click(method),
             }
         )
 
@@ -345,6 +346,19 @@ def build_checks(dev, fields, report7):
                 "match": "INFO",
             }
         )
+    # Rate mirror (story 3-2): report-7 rpt_usb IS the rateCode from 0x0880,
+    # validated on the device. Cross-check like the DPI fields instead of the
+    # bare INFO above (which is kept for rpt_24g, not a rate code).
+    rate_eeprom = fields["mouse_report"]["value"]
+    rate_report = report7[protocol.R7_RPT_USB]
+    checks.append(
+        {
+            "field": "rate_mirror",
+            "eeprom": rate_eeprom,
+            "report7": rate_report,
+            "match": "MATCH" if rate_eeprom == rate_report else "MISMATCH",
+        }
+    )
     return checks
 
 
@@ -358,9 +372,14 @@ def print_status(status):
         )
     print("=== Format hypotheses ===")
     for b in status["hypothesis"]["buttons"]:
+        fn = b["fn"] or "RAW %s" % b["raw"]
         print(
-            "  {:<22} {}  raw={}  as_1b={}  as_2b_le={}".format(
-                b["name"], b["addr"], b["raw"], b["as_1b"], b["as_2b_le"]
+            "  {:<22} {}  method={:<8} fn={}{}".format(
+                b["name"],
+                b["addr"],
+                b["raw"],
+                fn,
+                "  (left-click)" if b["left_click"] else "",
             )
         )
     s = status["hypothesis"]["shared_0x08D8"]

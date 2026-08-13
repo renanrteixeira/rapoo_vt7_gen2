@@ -38,14 +38,14 @@ development_status:
 
   # Phase 3 — Performance / parameters (CAP-6) — S5, S6, S7
   epic-3: in-progress
-  3-1-performance-modes: review
-  3-2-rf-polling-rate: review
-  3-3-mouse-parameters-toggles: review
+  3-1-performance-modes: done
+  3-2-rf-polling-rate: done
+  3-3-mouse-parameters-toggles: done
   epic-3-retrospective: optional
 
   # Phase 4 — Button remap (CAP-7) — S8
-  epic-4: backlog
-  4-1-button-remap: backlog
+  epic-4: in-progress
+  4-1-button-remap: review
   epic-4-retrospective: optional
 
   # Phase 5 — System operations (CAP-8) — S9
