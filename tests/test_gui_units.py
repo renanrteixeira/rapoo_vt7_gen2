@@ -242,9 +242,10 @@ class ButtonsRenderPlanTest(unittest.TestCase):
     def test_isolated_error_aggregates_in_status_and_disables_one(self):
         info = {"buttons": {}, "errors": {"a": "x", "b": "y"}}
         status, pickers = gui.buttons_render_plan(info, None)
-        self.assertEqual(status[0], "buttons_error")
+        self.assertEqual(status[0], "buttons_more_errors")
         self.assertTrue(status[1])
-        self.assertIn("+1", status[2]["error"])
+        self.assertEqual(status[2]["error"], "x")
+        self.assertEqual(status[2]["n"], 1)
 
     def test_per_field_error_with_real_buttons_disables_only_that_one(self):
         info = buttons_info({name: "mouse_left" for name, _o in buttons.BUTTONS})

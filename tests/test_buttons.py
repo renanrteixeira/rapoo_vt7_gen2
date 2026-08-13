@@ -212,6 +212,19 @@ class DecodeTest(unittest.TestCase):
         self.assertFalse(buttons.is_left_click(bytes.fromhex("03000400")))
         self.assertFalse(buttons.is_left_click(bytes.fromhex("08000500")))
 
+    def test_left_click_no_overmatch_on_non_left_mouse_button(self):
+        # Type 0x03 with a different button index in byte 2 must not count as
+        # left-click (would silently bend the ≥1-left rule).
+        self.assertFalse(buttons.is_left_click(bytes.fromhex("03000200")))
+        self.assertFalse(buttons.is_left_click(bytes.fromhex("03001000")))
+        self.assertFalse(buttons.is_left_click(bytes.fromhex("03000000")))
+
+    def test_left_click_no_undermatch_on_left_variant(self):
+        # A left button with a non-zero flag byte is still left-click.
+        self.assertTrue(buttons.is_left_click(bytes.fromhex("030001ff")))
+        self.assertTrue(buttons.is_left_click(bytes.fromhex("0300010a")))
+        self.assertTrue(buttons.is_left_click(bytes.fromhex("03000101")))
+
     def test_button_addr_format(self):
         self.assertEqual(buttons.button_addr("mouse_left"), "0x0600")
         self.assertEqual(buttons.button_addr("mouse_ble"), "0x0638")
@@ -484,6 +497,38 @@ class MainButtonTest(unittest.TestCase):
         app._window.update_buttons({"buttons": {}, "errors": {}})
         self.assertTrue(app._window.has_buttons())
 
+    def test_no_left_click_error_from_live_scan_is_localized(self):
+        # The authoritative in-module refusal path: the window's last-known
+        # state passes the pre-check, but set_function's live scan finds no
+        # other left-click button -> NoLeftClickError must surface as the
+        # localized button_no_left message (not a raw exception string).
+        from src.rapoo_vt7 import main
+
+        app = self._app()
+        # Window cache claims BLE is left-click (pre-check would pass)...
+        app._window.buttons = {
+            n: {
+                "fn": "mouse_left" if n in ("mouse_left", "mouse_ble") else None,
+                "method": (
+                    bytes.fromhex("03000100")
+                    if n in ("mouse_left", "mouse_ble")
+                    else bytes.fromhex("08000500")
+                ),
+                "raw_hex": "03000100" if n in ("mouse_left", "mouse_ble") else "08000500",
+            }
+            for n, _o in buttons.BUTTONS
+        }
+        app._on_set_button("mouse_left", "fire_button")
+        self.assertEqual(len(app._monitor.jobs), 1)
+        fn, _on_done, on_error, _wake = app._monitor.jobs[0]
+        # ...but live reads show NO other left (only mouse_left itself).
+        dev = FakeDev(data={0x0600: bytes.fromhex("03000100")})
+        with self.assertRaises(buttons.NoLeftClickError):
+            fn(dev)
+        with _sync_idle():
+            on_error(buttons.NoLeftClickError())
+        self.assertIn("left", app._window.errors[-1].lower())
+
     def test_on_button_changed_raw_selection_is_noop(self):
         from src.rapoo_vt7 import gui
 
@@ -495,6 +540,23 @@ class MainButtonTest(unittest.TestCase):
         combo = _StubCombo()
         combo.active = "__raw__"
         window._on_button_changed(combo, "mouse_right")
+        self.assertEqual(calls, [])
+
+    def test_on_button_changed_decode_only_selection_is_noop(self):
+        # Decode-only ids (BLE left-click variant, gated combos) are shown as a
+        # labelled row but are not writable — re-selecting one must not submit.
+        from src.rapoo_vt7 import gui
+
+        calls = []
+        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
+        window._buttons_loading = False
+        window._buttons = {
+            "buttons": {"mouse_ble": {"fn": "mouse_left_ble"}}
+        }
+        window._on_set_button = lambda name, fid: calls.append((name, fid))
+        combo = _StubCombo()
+        combo.active = "mouse_left_ble"
+        window._on_button_changed(combo, "mouse_ble")
         self.assertEqual(calls, [])
 
 

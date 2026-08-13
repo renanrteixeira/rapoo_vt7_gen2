@@ -188,6 +188,7 @@ rapoo_vt7_gen2/
 │   ├── device.py               ← direct hidraw + interface detection (rid 6)
 │   ├── battery.py              ← thread: 0xAA poll + passive report 7 listen
 │   ├── dpi.py                  ← Phase 2: read_dpi/set_gear/set_value/set_gears/add_gear/delete_gear
+│   ├── buttons.py              ← Phase 4: method table + read/set_function + ≥1-left rule
 │   ├── gui.py                  ← window in tabs: battery + DPI (active-list radios + editor)
 │   ├── icons.py                ← cairo icon: Material mouse + % (46x24) + cache
 │   └── tray.py                 ← AppIndicator + menu (battery + window)
@@ -332,7 +333,23 @@ captured before any write.
       hardware; difference annotated in FEATURES.md §2.C). Debounce/sleep/
       angle byte maps are our inference (defaults agree); definitive = diff
       an A Hub write (P9).
-- [ ] **B4** Button remap (extract function codes from the bundle)
+- [x] **B4** Button remap (extract function codes from the bundle)
+      — done (story 4-1): each of the 13 buttons has a bank-0 EEPROM field
+      (`0x0600`–`0x0638`) storing a **4-byte method** `<type><p1><p2><p3>`,
+      CONFIRMED ON DEVICE (2026-08-12) byte-for-byte against the A Hub
+      `keyPosition` table; the full function table was extracted from the A Hub
+      chunk `keyPosition-D9HhW_CA.js`. `buttons.py` ships `METHODS` (30
+      picker-offered functions) + `_DECODE_ONLY` (gated combos/BLE, read-back
+      labels only — Ask First), contextual scroll decode (`0bff00ff` → fwd/back
+      per button), `read_button`/`read_section` (isolated per-field errors),
+      `set_function` (write + readback verify + **≥1-left-click rule**,
+      `NoLeftClickError`); "Botões" tab in the window (combo per button, raw
+      hex fallback, dynamic status, error isolation, re-translation); user
+      actions use `submit(..., wake=True)`. On-device write-test on 0x0634
+      (bottom) was reversible; the ≥1-left rule refused removing the last
+      left-click and allowed it while another button (BLE) kept left. Suite
+      273 OK (review fixes → 283 OK). One defer: `_on_set_rf` English string
+      (story 3-2).
 - [ ] **B5** System: factory reset, device name, receiver pairing
 
 ---

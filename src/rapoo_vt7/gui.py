@@ -145,10 +145,13 @@ def buttons_render_plan(info, error):
             first = next(iter(errs.values()))
             extra = len(errs) - 1
             if extra > 0:
-                text = ("buttons_error", True, {"error": first + "+%d" % extra})
+                status = (
+                    "buttons_more_errors",
+                    True,
+                    {"error": first, "n": extra},
+                )
             else:
-                text = ("buttons_error", True, {"error": first})
-            status = text
+                status = ("buttons_error", True, {"error": first})
         else:
             status = ("buttons_status", False, {"n": len(buttons.BUTTONS)})
     pickers = {}

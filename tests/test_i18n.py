@@ -82,6 +82,12 @@ class I18nParityTest(unittest.TestCase):
                 "param_changed": {"param": "x", "state": "on"},
                 "param_error": {"error": "x"},
                 "param_more_errors": {"n": 2},
+                "buttons_error": {"error": "x"},
+                "buttons_more_errors": {"error": "x", "n": 2},
+                "buttons_status": {"n": 13},
+                "button_raw": {"hex": "03000100"},
+                "button_changed": {"button": "x", "fn": "y"},
+                "button_unknown_fn": {"fn": "x"},
             }
             for key, kwargs in formats.items():
                 try:

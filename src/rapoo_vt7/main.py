@@ -428,9 +428,7 @@ class RapooApp(Gtk.Application):
         state, fast refusal) and inside `buttons.set_function` (live reads,
         authoritative)."""
         if fid not in buttons.METHODS:
-            self._button_error(
-                ValueError(LANGS[self._window._lang]["button_unknown_fn"].format(fn=fid))
-            )
+            self._button_error(buttons.UnknownFunctionError(fid))
             return
         info = self._window.get_buttons_info()
         if info is not None and not info.get("errors"):
@@ -475,7 +473,7 @@ class RapooApp(Gtk.Application):
         lang = LANGS[self._window._lang]
         if isinstance(exc, buttons.NoLeftClickError):
             msg = lang["button_no_left"]
-        elif isinstance(exc, ValueError) and str(exc).startswith("unknown function"):
+        elif isinstance(exc, buttons.UnknownFunctionError):
             msg = lang["button_unknown_fn"].format(fn=exc.args[0])
         else:
             msg = str(exc)

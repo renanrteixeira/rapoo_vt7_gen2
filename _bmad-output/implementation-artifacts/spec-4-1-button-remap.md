@@ -319,3 +319,18 @@ left-click) cannot be reassigned away from left-click.
 
 - `ButtonsRenderPlanTest`: render-plan decisions + scroll direction + count.
   [`test_gui_units.py:203`](../../tests/test_gui_units.py#L203)
+
+### Review Findings
+
+- [x] [Review][Patch] (fixed) `_other_is_left` só captura `ValueError`; `CommandTimeout`/`OSError` propagam e abortam o remap, contradizendo o contrato documentado "refused rather than aborted" [`src/rapoo_vt7/buttons.py:205`](../../src/rapoo_vt7/buttons.py#L205)
+- [x] [Review][Patch] (fixed) `_button_error` faz double-wrap do "unknown function": `exc.args[0]` já contém `"unknown function 'x'"`, gerando "Unknown function: unknown function 'x'" [`src/rapoo_vt7/main.py:478`](../../src/rapoo_vt7/main.py#L478)
+- [x] [Review][Patch] (fixed) "+N more" hardcoded em inglês no status dos botões, divergindo do `param_more_errors` localizado [`src/rapoo_vt7/gui.py:148`](../../src/rapoo_vt7/gui.py#L148)
+- [x] [Review][Patch] (fixed) Teste de placeholders i18n omite as chaves de botão (`buttons_error`, `buttons_status`, `button_raw`, `button_changed`, `button_unknown_fn`) [`tests/test_i18n.py:71`](../../tests/test_i18n.py#L71)
+- [x] [Review][Patch] (fixed) `is_left_click` (heurística byte-based) sem teste de over/under-match [`src/rapoo_vt7/buttons.py:156`](../../src/rapoo_vt7/buttons.py#L156)
+- [x] [Review][Patch] (fixed) Path in-module do `NoLeftClickError` (via `_button_error`) sem teste — só o pre-submit é coberto [`src/rapoo_vt7/main.py:476`](../../src/rapoo_vt7/main.py#L476)
+- [x] [Review][Patch] (fixed) Branch decode-only re-selection em `_on_button_changed` sem teste headless (só o `__raw__` é coberto) [`src/rapoo_vt7/gui.py:713`](../../src/rapoo_vt7/gui.py#L713)
+- [x] [Review][Patch] (fixed) CONTEXT.md não atualizado: `buttons.py` fora do file map §6 e B4 ainda `[ ]` [`CONTEXT.md:190`](../../CONTEXT.md#L190)
+- [x] [Review][Defer] Guards/testes de `_on_rf_toggled`, `update_perf` (RF retention), `_maybe_refresh_perf`, `perf_mode_name` — código de stories 3-2/3-3 que entrou no diff; ownership delas [`src/rapoo_vt7/gui.py:773`](../../src/rapoo_vt7/gui.py#L773)
+- [x] [Review][Defer] `set_function` não verifica a golden rule do baseline (gap codebase-wide, todas as write paths) [`src/rapoo_vt7/buttons.py:220`](../../src/rapoo_vt7/buttons.py#L220)
+- [x] [Review][Defer] `build_checks` rate-mirror faz lookup `fields["mouse_report"]["value"]` sem guard (probe de story 1-3) [`tools/probe.py:352`](../../tools/probe.py#L352)
+- [x] [Review][Defer] write_eeprom_verify com read-back timeout após o write ter caído — erro surgido embora o botão tenha sido remapeado (padrão device-wide) [`src/rapoo_vt7/buttons.py:247`](../../src/rapoo_vt7/buttons.py#L247)
