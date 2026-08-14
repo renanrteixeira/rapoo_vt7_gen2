@@ -8,7 +8,7 @@ from gi.repository import GLib, Gio, Gtk, Notify
 
 from .battery import BatteryMonitor
 from .config import load_language, save_language
-from . import buttons, dpi, parameters, performance as perf
+from . import buttons, dpi, parameters, performance as perf, system
 from .gui import BatteryWindow
 from .i18n import LANGS
 from .icons import DEFAULT_ICON_DIR, render_all
@@ -106,6 +106,7 @@ class RapooApp(Gtk.Application):
             on_set_rate=self._on_set_rate,
             on_set_param_choice=self._on_set_param_choice,
             on_set_button=self._on_set_button,
+            on_factory_reset=self._on_factory_reset,
         )
 
         self._monitor = BatteryMonitor(
@@ -478,6 +479,49 @@ class RapooApp(Gtk.Application):
         else:
             msg = str(exc)
         GLib.idle_add(self._window.set_buttons_error, msg)
+
+    # --- System: factory reset (Phase 5, destructive + user-confirmed) ---
+
+    def _on_factory_reset(self):
+        """Factory-reset button confirmed: sends 0xAD via submit(wake=True).
+
+        The confirmation dialog lives in the window (blocking, localized);
+        this handler only runs after the user clicked OK. The command is
+        attempted even if the mouse just fell asleep — a device timeout flips
+        the monitor back to asleep and surfaces the localized error.
+        """
+        self._monitor.submit(
+            system.factory_reset,
+            on_done=lambda res: GLib.idle_add(self._factory_reset_done, res),
+            on_error=self._factory_reset_error,
+            wake=True,
+        )
+
+    def _factory_reset_done(self, result):
+        """Runs on the GTK thread after a verified reset. The device returned
+        to factory defaults, so every config tab is stale: re-read them all."""
+        lang = LANGS[self._window._lang]
+        Notify.Notification.new(
+            "Rapoo VT7",
+            lang["factory_reset_success"],
+            "dialog-information",
+        ).show()
+        self._window.set_system_message(lang["factory_reset_success"], False)
+        self._refresh_dpi()
+        self._refresh_perf()
+        self._refresh_params()
+        self._refresh_buttons()
+
+    def _factory_reset_error(self, exc):
+        """Runs on the monitor thread; hops to GTK to surface the error."""
+        lang = LANGS[self._window._lang]
+        if isinstance(exc, system.FactoryResetAckError):
+            msg = lang["factory_reset_ack_error"]
+        elif isinstance(exc, system.FactoryResetVerifyError):
+            msg = lang["factory_reset_verify_error"]
+        else:
+            msg = str(exc)
+        GLib.idle_add(self._window.set_system_message, msg, True)
 
     def _refresh_buttons(self):
         def done(info):

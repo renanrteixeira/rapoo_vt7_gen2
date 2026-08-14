@@ -312,6 +312,7 @@ class BatteryWindow:
         on_set_rate=None,
         on_set_param_choice=None,
         on_set_button=None,
+        on_factory_reset=None,
     ):
         self._lang = lang if lang in i18n.LANGS else "pt_BR"
         self._on_lang_change = on_lang_change
@@ -325,6 +326,7 @@ class BatteryWindow:
         self._on_set_rate = on_set_rate
         self._on_set_param_choice = on_set_param_choice
         self._on_set_button = on_set_button
+        self._on_factory_reset = on_factory_reset
         self._known = False
         self._asleep = False
         self._last = None
@@ -442,6 +444,18 @@ class BatteryWindow:
         self._tab_buttons = Gtk.Label(label=self._t("tab_buttons"))
         self._notebook.append_page(page5_scroll, self._tab_buttons)
         self._build_buttons_section(page5)
+
+        page6_scroll = Gtk.ScrolledWindow()
+        page6_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        page6 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        page6.set_margin_top(16)
+        page6.set_margin_bottom(16)
+        page6.set_margin_start(16)
+        page6.set_margin_end(16)
+        page6_scroll.add(page6)
+        self._tab_system = Gtk.Label(label=self._t("tab_system"))
+        self._notebook.append_page(page6_scroll, self._tab_system)
+        self._build_system_section(page6)
         self._render()
 
     def _t(self, key):
@@ -648,6 +662,76 @@ class BatteryWindow:
         self._buttons_grid = Gtk.Grid(column_spacing=8, row_spacing=4)
         self._buttons_grid.set_margin_top(4)
         vbox.pack_start(self._buttons_grid, False, False, 0)
+
+    def _build_system_section(self, vbox):
+        # Phase 5 system operations: factory reset (0xAD) — a destructive,
+        # user-confirmed command. The button is always enabled (an explicit
+        # click is attempted even while the mouse is asleep, via wake=True).
+        self._system_busy = False
+        self._system_status = Gtk.Label()
+        self._system_status.set_halign(Gtk.Align.CENTER)
+        self._system_status.set_line_wrap(True)
+        vbox.pack_start(self._system_status, False, False, 2)
+
+        self._system_button = Gtk.Button(label=self._t("factory_reset_button"))
+        self._system_button.set_halign(Gtk.Align.CENTER)
+        self._system_button.set_margin_top(6)
+        self._system_button.connect("clicked", self._on_factory_reset_clicked)
+        vbox.pack_start(self._system_button, False, False, 0)
+
+        self._system_hint = Gtk.Label(label=self._t("factory_reset_hint"))
+        self._system_hint.set_line_wrap(True)
+        self._system_hint.set_halign(Gtk.Align.CENTER)
+        self._system_hint.set_margin_top(6)
+        vbox.pack_start(self._system_hint, False, False, 0)
+
+    def _on_factory_reset_clicked(self, btn):
+        """Confirmation dialog (explicit and blocking) before the reset.
+
+        The dialog re-reads its labels at show time, so the text is always in
+        the current language even after a language change. OK triggers the
+        reset through the `on_factory_reset` callback (main.py submit with
+        wake=True); Cancel closes without sending anything.
+
+        While a reset is in flight the button is disabled and further clicks
+        are ignored, so two resets can never queue back to back.
+        """
+        if getattr(self, "_system_busy", False):
+            return
+        dialog = Gtk.MessageDialog(
+            transient_for=self._win,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.NONE,
+            text=self._t("factory_reset_dialog_title"),
+        )
+        dialog.format_secondary_text(self._t("factory_reset_dialog_message"))
+        dialog.add_button(self._t("factory_reset_cancel"), Gtk.ResponseType.CANCEL)
+        dialog.add_button(self._t("factory_reset_ok"), Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.OK and self._on_factory_reset:
+            self._system_busy = True
+            self._system_button.set_sensitive(False)
+            self._on_factory_reset()
+
+    def set_system_message(self, message, is_error=False):
+        """Non-blocking feedback of the last system operation (reset).
+
+        Also re-enables the reset button — the operation (reset + verify) has
+        finished, whether it succeeded or failed.
+        """
+        if getattr(self, "_system_busy", False):
+            self._system_busy = False
+            self._system_button.set_sensitive(True)
+        if is_error:
+            self._system_status.set_markup(
+                "<span color='red'>%s</span>"
+                % GLib.markup_escape_text(message)
+            )
+        else:
+            self._system_status.set_text(message)
 
     def _rebuild_buttons(self):
         self._buttons_loading = True
@@ -1140,6 +1224,7 @@ class BatteryWindow:
             self._tab_perf.set_text(self._t("tab_perf"))
             self._tab_params.set_text(self._t("tab_params"))
             self._tab_buttons.set_text(self._t("tab_buttons"))
+            self._tab_system.set_text(self._t("tab_system"))
             self._dpi_title.set_markup(
                 "<b>%s</b>" % GLib.markup_escape_text(self._t("dpi_section"))
             )
@@ -1167,6 +1252,8 @@ class BatteryWindow:
             self._buttons_title.set_markup(
                 "<b>%s</b>" % GLib.markup_escape_text(self._t("buttons_section"))
             )
+            self._system_button.set_label(self._t("factory_reset_button"))
+            self._system_hint.set_label(self._t("factory_reset_hint"))
             for name, cb in self._param_check.items():
                 cb.set_label(self._t("param_" + name))
             for name, (lbl, val) in self._param_state.items():

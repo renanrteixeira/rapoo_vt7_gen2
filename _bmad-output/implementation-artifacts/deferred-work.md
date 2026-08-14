@@ -101,3 +101,24 @@ modify existing entries; only append.
 - source_spec: `_bmad-output/implementation-artifacts/spec-4-1-button-remap.md`
   summary: A `write_eeprom_verify` read-back timeout after the write has landed surfaces an error although the button was already remapped on-device — inherent to the verify-after-write pattern used across the app (device.py), not 4-1-specific.
   evidence: buttons.py:247 `dev.write_eeprom_verify`; device.py:259-267 raises on mismatch or returns the readback; a timeout in `query` raises CommandTimeout before the mismatch check can run.
+
+## Deferred from: code review of spec-5-1-factory-reset-with-confirmation (08-13-2026)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-factory-reset-with-confirmation.md`
+  summary: Factory-reset verification is intentionally narrow — only `MOUSE_DPI_CUR`, the RF byte `0x08D8` and the 7-slot `SENSOR_MODE` table are checked, so a partial reset that restores those markers but leaves DPI X/Y lists, gear-enable count, buttons or §C params untouched would still be reported as verified, while the dialog/hint text claims "ALL settings".
+  evidence: spec's frozen intent names exactly these three markers (and "Always" scopes verification to "key EEPROM fields"); system.py `FACTORY_*` + `_is_factory_state`; the UI overclaim is a deliberate spec wording.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-factory-reset-with-confirmation.md`
+  summary: A near-default device whose three markers already match factory defaults reports a successful reset as `FactoryResetVerifyError` (the `after == before` change check fails), even though the reset wiped the non-verified settings — the Ask First "no change detected" case is surfaced as an error instead of a human question.
+  evidence: system.py `factory_reset` raises when `after == before`; spec frozen text says to HALT and ask whether to accept — needs a live-device decision.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-factory-reset-with-confirmation.md`
+  summary: On a verification failure the mouse was very likely reset anyway (e.g. post-read timeout), but the app keeps showing the pre-reset cached DPI/buttons/params as editable — the user could write stale values back to the now-reset hardware; the "no state is changed" claim only holds for the status label.
+  evidence: `_factory_reset_error` (main.py) only sets the system message and never refreshes the config tabs; only `_factory_reset_done` refreshes.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-factory-reset-with-confirmation.md`
+  summary: `_factory_reset_error` reads `self._window._lang` on the monitor thread (race with a concurrent language change) and hops only the resolved message to GTK, unlike `_factory_reset_done` which reads the language after the idle_add hop.
+  evidence: main.py `_factory_reset_error` vs `_factory_reset_done`; same pattern as the pre-existing `_button_error`/`_param_error` handlers — codebase-wide, not 5-1-specific.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-factory-reset-with-confirmation.md`
+  summary: `Notify.Notification.new(...).show()` in `_factory_reset_done` is unguarded — if the notification daemon is unavailable, the raise aborts the success path and skips all four tab refreshes (same pattern as every other `_*_changed` handler).
+  evidence: main.py `_factory_reset_done` calls `.show()` before `_refresh_*`; pre-existing pattern across `_param_changed`/`_button_changed`/`_perf_changed`.
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-factory-reset-with-confirmation.md`
+  summary: The RF verification compares the whole shared byte `0x08D8` against `0x00`, so a factory state that preserves the low-power-warning bit (bit1) while clearing RF-strengthen (bit0) would report a false verification failure — needs a live-device read of the post-reset byte to confirm the full-byte default.
+  evidence: system.py `FACTORY_RF_BYTE = 0x00` vs FEATURES.md §2.B describing `0x08D8` as a shared bit-mask byte (bit0 RF strengthen, bit1 low-power warning).
