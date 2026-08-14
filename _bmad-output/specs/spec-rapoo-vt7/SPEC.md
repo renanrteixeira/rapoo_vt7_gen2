@@ -40,8 +40,8 @@ A **pain to solve** plus a **vision to realize**. The Rapoo VT7 gaming mouse has
   - **intent:** The user maps each button field (0x0600–0x0638) to a function, always keeping at least one left button functional.
   - **success:** A remap is written, re-reads to the chosen code, and the OS receives the new function on click.
 - **CAP-8** System operations *(pending — Phase 5)*
-  - **intent:** The user factory-resets the mouse (0xAD, with confirmation), renames the device (0x09EC), and pairs a receiver (3-step flow).
-  - **success:** Each operation is performed and verified on the device without corrupting state.
+  - **intent:** The user factory-resets the mouse (0xAD, with confirmation) and renames the device (0x09EC); after its protocol is validated, the user can also pair a receiver through a guided 3-step flow.
+  - **success:** Reset and rename are independently performed and verified on the device without corrupting state; pairing commands are first mapped and validated on-device, then the guided flow is verified with that protocol.
 
 ## Constraints
 
@@ -51,6 +51,7 @@ A **pain to solve** plus a **vision to realize**. The Rapoo VT7 gaming mouse has
 - **Mouse-asleep discipline** — commands may answer empty (`06 00…`); minimize command load: 0xAA only on first connect and after 300 s without report 7; listen-only (60 s quiet) otherwise.
 - **Identification** — the configuration interface is the hidraw whose report descriptor contains Report ID 6; udev covers both PIDs `24ae:1413|24ae:4613` with `MODE="0664" GROUP="plugdev"`.
 - **GUI-only user surface** — every user-manipulable feature (CAP-5–8) is reachable from the systray menu or a dialog; the CLI (`probe.py`) is a diagnostics/validation harness, never a user-facing interface.
+- **Receiver-pairing gate** — receiver-pairing commands are not yet mapped; do not ship a pairing UI or write path until the A Hub flow has been reverse-mapped and validated on the real device.
 - **Stack** — Python 3, GTK3 + AppIndicator (ubuntu-appindicators extension, status ACTIVE), pycairo icons (not `gi.repository.cairo`), absolute PNG path via `set_icon_full`, panel icon-size 24 px.
 - **Linux-only, single user** — Ubuntu 26.04 + GNOME Wayland; lifecycle via `install.sh` / `run.sh` / `uninstall.sh` + autostart desktop file.
 
@@ -82,3 +83,4 @@ On a stock Ubuntu 26.04 + GNOME Wayland, plug in a Rapoo VT7 (2.4G or USB cable)
 - What is the index-to-Hz map for polling rate (`rpt_24g` / `rpt_usb` in report 7)?
 - Is 0x08D8 a shared bit mask between RF strategy and the low-power warning?
 - Does the passive report 7 mirror every field Phase 3 needs for cross-validation?
+- Which device commands and acknowledgements implement the VT7 receiver-pairing flow?

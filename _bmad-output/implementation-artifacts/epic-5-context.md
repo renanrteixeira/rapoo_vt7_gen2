@@ -14,18 +14,20 @@ state. This completes CAP-8, the last pending capability.
 
 ## Stories
 
-- Story 9: System operations
+- Story 9: Factory reset with confirmation.
+- Story 10: Device name read and rename.
+- Story 11: Receiver-pairing protocol discovery and on-device validation.
+- Story 12: Guided receiver pairing, after Story 11 succeeds.
 
 ## Requirements & Constraints
 
 - Factory reset wipes everything: it must be guarded by a confirmation dialog
   (spec checkpoint for this story) and triggered only by explicit user intent —
   never from a passive path.
-- Receiver pairing is a 3-step physical flow — connect wired, position the
-  mouse, press L+M+R — driven by the app's flow. The underlying pairing commands
-  are **not mapped yet** (FEATURES.md §E, ⚠️): they must be reverse-mapped from
-  the A Hub `deviceMatcher` logic and validated on the device before the flow
-  writes anything.
+- Receiver pairing is split into discovery and UI stories. Story 11 must
+  reverse-map the A Hub `deviceMatcher` commands and validate them on-device;
+  Story 12 may then expose the 3-step physical flow (connect wired, position
+  the mouse, press L+M+R). No pairing UI or write path ships before Story 11.
 - Device name is a 16-byte string field (`0x09EC`); encode/pad user input to the
   fixed 16-byte field and validate length before writing.
 - Golden rule applies to every EEPROM write, including the name (baseline exists

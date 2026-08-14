@@ -1,21 +1,5 @@
-# Sprint Status — Rapoo VT7
-# Manually built from `_bmad-output/specs/spec-rapoo-vt7/stories.yaml` (spec's
-# story source of truth) + `phase-map.md`. The deterministic script
-# (sprint_plan.py) could not run: it requires `ruamel.yaml`, unavailable in
-# this environment (no pip/uv; sudo requires a password), and it parses epic
-# markdown files, which this project does not use (plan lives in stories.yaml).
-
-# generated: 08-10-2026 20:13
-# project: rapoo_vt7_gen2
-# project_key: NOKEY
-# tracking_system: file-system
-# story_location: _bmad-output/implementation-artifacts
-
-# Epic = roadmap phase (phase-map.md). Phase 1 (battery, CAP-1..3) is already
-# shipped and has no stories here; epics map the pending phases 0/2/3/4/5.
-
 generated: 08-10-2026 20:13
-last_updated: 08-12-2026
+last_updated: 08-13-2026 21:30
 project: rapoo_vt7_gen2
 project_key: NOKEY
 tracking_system: file-system
@@ -48,9 +32,12 @@ development_status:
   4-1-button-remap: done
   epic-4-retrospective: optional
 
-  # Phase 5 — System operations (CAP-8) — S9
+  # Phase 5 — System operations (CAP-8) — Stories 9–12
   epic-5: in-progress
-  5-1-system-operations: in-progress
+  5-1-factory-reset-with-confirmation: review
+  5-2-device-name-read-and-rename: backlog
+  5-3-receiver-pairing-protocol-discovery: backlog
+  5-4-guided-receiver-pairing: backlog
   epic-5-retrospective: optional
 
 action_items:

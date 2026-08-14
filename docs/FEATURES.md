@@ -129,7 +129,7 @@ their method derives from the bundle and needs a write test first.
 ### E. System / firmware — ✅ commands, ⚠️ flows
 | Item | Mechanism | Notes |
 |---|---|---|
-| Factory reset | `0xAD` `return_factory_settings` | command ✅; app confirmation is "wipes everything" |
+| Factory reset | `0xAD` `return_factory_settings` | ✅ implemented (`system.py` + "Sistema" tab: confirmation dialog + post-reset verification; command only — never writes EEPROM) |
 | Firmware update | `0xA8` `factory_update` + download | requires **wired mode**; risky — last phase |
 | Receiver pairing | app flow (`deviceMatcher`) | 3 steps (connect wired, position, press L+M+R); commands ⚠️ not mapped |
 | Device name | `0x09EC` | `CONFIG_NAME` `_3(1004)` — **16B string ✅**; read "CFG1" on device |
@@ -271,7 +271,20 @@ recorded here. When resuming, start from the end of the last marked phase.
       the bundle and are gated until device-validated — Ask First).
 
 ### Phase 5 — System
-- [ ] Factory reset (`0xAD`) with a confirmation dialog.
+- [x] Factory reset (`0xAD`) with a confirmation dialog (story 9, CAP-8).
+      **Implemented (2026-08-13)**: `system.py` owns the destructive command
+      + post-reset verification (read the key EEPROM markers → 0xAD ACK →
+      re-read with a reboot retry → confirm the state both changed AND matches
+      the factory defaults `MOUSE_DPI_CUR`=0, RF byte `0x08D8`=0x00 and the
+      validated `SENSOR_MODE` table `[0,0,1,1,3,3,3]`). The "Sistema" window
+      tab has a "Restauração de fábrica" button guarded by an explicit,
+      blocking, localized confirmation dialog; the reset is user-initiated via
+      `submit(..., wake=True)` (attempted even while the mouse is asleep) and
+      feedback is non-blocking (notification + tab status). It is a command,
+      not an EEPROM write — never touches the baseline file and is not gated
+      behind a baseline-exists check. On success every config tab re-reads; a
+      verification failure surfaces a localized error without refreshing the
+      tabs (no state is changed in the app).
 - [ ] Device name (`0x09EC`).
 - [ ] Receiver pairing (3-step flow) — validate commands.
 

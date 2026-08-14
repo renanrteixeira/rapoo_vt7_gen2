@@ -68,11 +68,38 @@
     Extract codes via A Hub configure + before/after dump diff (open
     question 4); enforce >=1 left button.
 - id: "9"
-  title: System operations
+  title: Factory reset with confirmation
   description: >-
-    Factory reset (0xAD) with a confirmation dialog, device name (0x09EC)
-    and receiver pairing 3-step flow, per CAP-8.
+    Expose factory reset (0xAD) through an explicit destructive-action
+    confirmation and verify the resulting device state, per CAP-8.
   spec_checkpoint: true
+  done_checkpoint: true
   invoke_dev_with: >-
-    Factory reset wipes everything - confirmation dialog required; pairing
-    is 3 steps (connect wired, position, press L+M+R).
+    nota de execução
+- id: "10"
+  title: Device name read and rename
+  description: >-
+    Read, display, validate, write, and re-read the 16-byte CONFIG_NAME field
+    at 0x09EC, enforcing the EEPROM baseline and verification rules in CAP-8.
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    nota de execução
+- id: "11"
+  title: Receiver-pairing protocol discovery
+  description: >-
+    Reverse-map the A Hub deviceMatcher pairing protocol and validate it on the
+    real VT7; do not add a user-facing pairing flow or send pairing writes yet.
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    nota de execução
+- id: "12"
+  title: Guided receiver pairing
+  description: >-
+    Implement the localized three-step receiver-pairing flow using only the
+    protocol validated by Story 11, with device-state verification per CAP-8.
+  spec_checkpoint: true
+  done_checkpoint: true
+  invoke_dev_with: >-
+    nota de execução
