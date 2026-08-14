@@ -107,6 +107,8 @@ class RapooApp(Gtk.Application):
             on_set_param_choice=self._on_set_param_choice,
             on_set_button=self._on_set_button,
             on_factory_reset=self._on_factory_reset,
+            on_read_name=self._refresh_name,
+            on_rename=self._on_rename,
         )
 
         self._monitor = BatteryMonitor(
@@ -499,18 +501,23 @@ class RapooApp(Gtk.Application):
 
     def _factory_reset_done(self, result):
         """Runs on the GTK thread after a verified reset. The device returned
-        to factory defaults, so every config tab is stale: re-read them all."""
+        to factory defaults, so every config tab is stale: re-read them all —
+        including the device name (the reset restores "CFG1", which the entry
+        no longer shows)."""
         lang = LANGS[self._window._lang]
         Notify.Notification.new(
             "Rapoo VT7",
             lang["factory_reset_success"],
             "dialog-information",
         ).show()
-        self._window.set_system_message(lang["factory_reset_success"], False)
+        self._window.set_system_message(
+            lang["factory_reset_success"], False, op="system"
+        )
         self._refresh_dpi()
         self._refresh_perf()
         self._refresh_params()
         self._refresh_buttons()
+        self._refresh_name()
 
     def _factory_reset_error(self, exc):
         """Runs on the monitor thread; hops to GTK to surface the error."""
@@ -521,7 +528,75 @@ class RapooApp(Gtk.Application):
             msg = lang["factory_reset_verify_error"]
         else:
             msg = str(exc)
-        GLib.idle_add(self._window.set_system_message, msg, True)
+        GLib.idle_add(self._window.set_system_message, msg, True, "system")
+
+    # --- System: device name (read on tab open, rename with verified write) ---
+
+    def _refresh_name(self):
+        """Reads the device name into the System tab (passive read, no wake).
+
+        Runs on the System tab open (window switch-page). A sleeping mouse is
+        surfaced as a localized read error in the tab status — the app never
+        wakes the mouse for a background read, and a passive error never lifts
+        an in-flight rename/reset busy flag (op=None).
+        """
+
+        def done(name):
+            GLib.idle_add(self._window.update_device_name, name)
+
+        def err(exc):
+            lang = LANGS[self._window._lang]
+            msg = lang["name_read_error"].format(error=str(exc))
+            GLib.idle_add(self._window.set_system_message, msg, True, None)
+
+        self._monitor.submit(system.read_device_name, on_done=done, on_error=err)
+
+    def _on_rename(self, text):
+        """Rename button: writes the device name via submit(wake=True).
+
+        `system.encode_name` refuses blank / >16-byte / embedded-NUL input
+        BEFORE the submit (fast, localized refusal — no device access), matching
+        the A Hub `renameConfig` byte rule. The write itself is attempted even
+        if the mouse just fell asleep; a device timeout flips the monitor back
+        to asleep and surfaces the error.
+        """
+        try:
+            system.encode_name(text)
+        except system.DeviceNameError as exc:
+            self._rename_error(exc)
+            return
+        self._monitor.submit(
+            lambda dev: system.write_device_name(dev, text),
+            on_done=lambda res: GLib.idle_add(self._rename_done, res),
+            on_error=self._rename_error,
+            wake=True,
+        )
+
+    def _rename_done(self, name):
+        """Runs on the GTK thread after a verified rename; shows the readback."""
+        lang = LANGS[self._window._lang]
+        self._window.update_device_name(name)
+        self._window.set_system_message(
+            lang["name_success"].format(name=name), False, op="name"
+        )
+
+    def _rename_error(self, exc):
+        """Runs on the monitor thread; hops to GTK to surface the error.
+
+        A verify mismatch additionally re-reads the name so the entry shows
+        what the mouse actually stored (not the unverified typed text).
+        """
+        lang = LANGS[self._window._lang]
+        if isinstance(exc, system.NameTooLongError):
+            msg = lang["name_too_long"]
+        elif isinstance(exc, system.NameEmptyError):
+            msg = lang["name_empty"]
+        elif isinstance(exc, system.NameVerifyError):
+            msg = lang["name_verify_error"]
+            GLib.idle_add(self._refresh_name)
+        else:
+            msg = str(exc)
+        GLib.idle_add(self._window.set_system_message, msg, True, "name")
 
     def _refresh_buttons(self):
         def done(info):

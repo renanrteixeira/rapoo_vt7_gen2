@@ -122,3 +122,17 @@ modify existing entries; only append.
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-1-factory-reset-with-confirmation.md`
   summary: The RF verification compares the whole shared byte `0x08D8` against `0x00`, so a factory state that preserves the low-power-warning bit (bit1) while clearing RF-strengthen (bit0) would report a false verification failure — needs a live-device read of the post-reset byte to confirm the full-byte default.
   evidence: system.py `FACTORY_RF_BYTE = 0x00` vs FEATURES.md §2.B describing `0x08D8` as a shared bit-mask byte (bit0 RF strengthen, bit1 low-power warning).
+
+## Deferred from: scope split of spec-5-2-device-name-read-and-rename (08-13-2026)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-2-device-name-read-and-rename.md`
+  summary: Edge-case hardening of the device-name flow is deferred: asleep/wake behavior tests, the verify-mismatch Ask First retry flow, and the extended I/O-matrix unit tests.
+  evidence: The full spec exceeded 1600 tokens (~1900); user chose `[S] Split`. Main goal = end-to-end read + rename (primitive + tab section + wiring + i18n + core tests). The re-translation row and busy-guard interaction items originally listed here shipped in the 5-2 review patches (op-scoped `set_system_message`, focus-guarded `update_device_name`, `_on_tab_switch` busy skip, `NameRowRetranslateTest`) and are no longer deferred.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-2-device-name-read-and-rename.md`
+  summary: `write_device_name` does not enforce the "no write before the baseline exists" golden rule before calling `write_eeprom_verify` — the same codebase-wide gap already recorded for `set_function` in the 4-1 deferrals.
+  evidence: system.py `write_device_name` calls `dev.write_eeprom_verify` with no baseline-existence guard; the only baseline reference in the tree is a comment in settings.py:15.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-2-device-name-read-and-rename.md`
+  summary: `_rename_error` and `_refresh_name.err` read `self._window._lang` on the monitor thread (race with a concurrent language change), the same pre-existing pattern as `_factory_reset_error` (recorded in the 5-1 deferrals) and the `_button_error`/`_param_error` handlers.
+  evidence: main.py `_rename_error`/`_refresh_name.err` vs `_rename_done`/`_factory_reset_done`, which read the language after the idle_add hop; codebase-wide pattern, not 5-2-specific.

@@ -28,6 +28,13 @@ device-validated. A reset is only reported as verified when the post-reset
 state BOTH differs from the pre-reset state (the command actually changed
 something) AND matches these factory defaults; either condition failing raises
 `FactoryResetVerifyError`.
+
+Besides the reset command, this module owns the **device-name primitives**
+(story 5-2): `read_device_name`/`write_device_name` for the 16-byte
+`CONFIG_NAME` field, with the A Hub `renameConfig` encoding (trim -> UTF-8
+bytes -> reject > 16 / embedded NUL -> NUL-pad to exactly 16) and the golden
+rule of verifying the write by an immediate re-read. The GUI surface lives in
+`gui.py` (System tab) and the `submit(..., wake=True)` wiring in `main.py`.
 """
 
 import time
@@ -66,6 +73,34 @@ class FactoryResetAckError(FactoryResetError):
 
 class FactoryResetVerifyError(FactoryResetError):
     """The post-reset EEPROM reads did not confirm the factory defaults."""
+
+
+# The device name is a fixed 16-byte NUL-padded UTF-8 field (CONFIG_NAME,
+# bank 0, reads "CFG1" on the real device). Writes follow the A Hub
+# `renameConfig` rule: trim -> UTF-8 bytes -> reject > 16 bytes / embedded
+# NUL -> NUL-pad to exactly 16 -> write_eeprom_verify.
+CONFIG_NAME_LENGTH = 16
+
+
+class DeviceNameError(ValueError):
+    """Base class of the device-name failures surfaced to the user.
+
+    Named `DeviceNameError` (not `NameError`) so the module never shadows the
+    Python builtin.
+    """
+
+
+class NameEmptyError(DeviceNameError):
+    """The trimmed name is empty (blank input). Raised before any device write."""
+
+
+class NameTooLongError(DeviceNameError):
+    """The trimmed name exceeds the 16-byte EEPROM field. Raised before any
+    device write."""
+
+
+class NameVerifyError(DeviceNameError):
+    """The readback after the rename write did not match the written bytes."""
 
 
 def _addr(offset):
@@ -155,3 +190,50 @@ def factory_reset(dev, attempts=RESET_READ_ATTEMPTS, delay=RESET_READ_DELAY):
     if not _is_factory_state(after):
         raise FactoryResetVerifyError("post-reset state is not the factory defaults")
     return {"before": before, "after": after, "acked": True}
+
+
+def encode_name(name):
+    """A Hub `renameConfig` encoding of the device name.
+
+    trim the input -> UTF-8 bytes -> reject when it exceeds the 16-byte field
+    or contains an embedded NUL byte (which would silently truncate the name
+    on readback) -> NUL-pad to exactly 16. Returns bytes. Raises
+    `DeviceNameError` subclasses before any device I/O: `NameEmptyError` on
+    blank input, `NameTooLongError` when the UTF-8 encoding is longer than 16
+    bytes, and `DeviceNameError` itself on an embedded NUL byte.
+    """
+    raw = str(name).strip().encode("utf-8")
+    if not raw:
+        raise NameEmptyError("device name is empty")
+    if b"\x00" in raw:
+        raise DeviceNameError("device name contains a NUL byte")
+    if len(raw) > CONFIG_NAME_LENGTH:
+        raise NameTooLongError("device name exceeds 16 bytes")
+    return raw + b"\x00" * (CONFIG_NAME_LENGTH - len(raw))
+
+
+def read_device_name(dev):
+    """Reads the 16-byte device name (CONFIG_NAME, bank 0) and decodes it.
+
+    Returns the first NUL-terminated segment as a str (UTF-8 with
+    errors="replace" — a raw "CFG1" is shown as-is, no A Hub default-config
+    localization). Raises ValueError/CommandTimeout on a bad reply.
+    """
+    raw = _read(dev, _addr(protocol.CONFIG_NAME), CONFIG_NAME_LENGTH)
+    return raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+
+
+def write_device_name(dev, name):
+    """Writes the device name and verifies it by an immediate re-read.
+
+    Golden rule: the write stays a bank-0 EEPROM write ≤ 24 B, confirmed by
+    `write_eeprom_verify`. `encode_name` refuses blank / >16-byte input before
+    any device access; a verify mismatch raises `NameVerifyError`. Returns the
+    decoded readback name (what the mouse actually stores).
+    """
+    encoded = encode_name(name)
+    try:
+        readback = dev.write_eeprom_verify(_addr(protocol.CONFIG_NAME), encoded)
+    except ValueError as exc:
+        raise NameVerifyError("device-name write did not verify") from exc
+    return readback.split(b"\x00", 1)[0].decode("utf-8", errors="replace")

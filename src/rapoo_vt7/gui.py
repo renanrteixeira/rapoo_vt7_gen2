@@ -313,6 +313,8 @@ class BatteryWindow:
         on_set_param_choice=None,
         on_set_button=None,
         on_factory_reset=None,
+        on_read_name=None,
+        on_rename=None,
     ):
         self._lang = lang if lang in i18n.LANGS else "pt_BR"
         self._on_lang_change = on_lang_change
@@ -327,6 +329,8 @@ class BatteryWindow:
         self._on_set_param_choice = on_set_param_choice
         self._on_set_button = on_set_button
         self._on_factory_reset = on_factory_reset
+        self._on_read_name = on_read_name
+        self._on_rename = on_rename
         self._known = False
         self._asleep = False
         self._last = None
@@ -455,6 +459,11 @@ class BatteryWindow:
         page6_scroll.add(page6)
         self._tab_system = Gtk.Label(label=self._t("tab_system"))
         self._notebook.append_page(page6_scroll, self._tab_system)
+        # Connected after every page is appended: the construction-time
+        # switch (first page) never fires a stale read, and opening the
+        # System tab re-reads the device name (passive, no wake).
+        self._system_page = page6_scroll
+        self._notebook.connect("switch-page", self._on_tab_switch)
         self._build_system_section(page6)
         self._render()
 
@@ -664,14 +673,37 @@ class BatteryWindow:
         vbox.pack_start(self._buttons_grid, False, False, 0)
 
     def _build_system_section(self, vbox):
-        # Phase 5 system operations: factory reset (0xAD) — a destructive,
-        # user-confirmed command. The button is always enabled (an explicit
-        # click is attempted even while the mouse is asleep, via wake=True).
+        # Phase 5 system operations: the device name (read on tab open,
+        # renamed by the user with a verified write) and the factory reset
+        # (0xAD) — a destructive, user-confirmed command. The reset button is
+        # always enabled (an explicit click is attempted even while the mouse
+        # is asleep, via wake=True); the rename is a user-initiated write, so
+        # it is also attempted with wake=True.
         self._system_busy = False
+        self._name_busy = False
         self._system_status = Gtk.Label()
         self._system_status.set_halign(Gtk.Align.CENTER)
         self._system_status.set_line_wrap(True)
         vbox.pack_start(self._system_status, False, False, 2)
+
+        self._name_title = Gtk.Label()
+        self._name_title.set_markup(
+            "<b>%s</b>" % GLib.markup_escape_text(self._t("device_name_section"))
+        )
+        self._name_title.set_halign(Gtk.Align.CENTER)
+        self._name_title.set_margin_top(6)
+        vbox.pack_start(self._name_title, False, False, 0)
+
+        self._name_entry = Gtk.Entry()
+        self._name_entry.set_placeholder_text(self._t("device_name_placeholder"))
+        self._name_entry.set_width_chars(16)
+        self._name_entry.set_halign(Gtk.Align.CENTER)
+        vbox.pack_start(self._name_entry, False, False, 0)
+
+        self._name_button = Gtk.Button(label=self._t("rename_button"))
+        self._name_button.set_halign(Gtk.Align.CENTER)
+        self._name_button.connect("clicked", self._on_rename_clicked)
+        vbox.pack_start(self._name_button, False, False, 0)
 
         self._system_button = Gtk.Button(label=self._t("factory_reset_button"))
         self._system_button.set_halign(Gtk.Align.CENTER)
@@ -684,6 +716,48 @@ class BatteryWindow:
         self._system_hint.set_halign(Gtk.Align.CENTER)
         self._system_hint.set_margin_top(6)
         vbox.pack_start(self._system_hint, False, False, 0)
+
+    def _on_tab_switch(self, notebook, page, page_num):
+        """Notebook page switched: opening the System tab re-reads the device
+        name (passive — a sleeping mouse surfaces a localized read error, it
+        is never woken by the app). Skipped while a rename is in flight."""
+        if (
+            page is self._system_page
+            and self._on_read_name
+            and not getattr(self, "_name_busy", False)
+        ):
+            self._on_read_name()
+
+    def _on_rename_clicked(self, btn):
+        """Rename button clicked: hands the entry text to `on_rename`.
+
+        Busy guard: while a rename is in flight the button is disabled and
+        further clicks are ignored, so two renames never queue back to back.
+        If the callback raises synchronously (e.g. a UnicodeEncodeError from a
+        lone surrogate in the entry), the busy flag is released again so the
+        button is never left disabled.
+        """
+        if getattr(self, "_name_busy", False):
+            return
+        if not self._on_rename:
+            return
+        self._name_busy = True
+        self._name_button.set_sensitive(False)
+        try:
+            self._on_rename(self._name_entry.get_text())
+        except Exception:
+            self._name_busy = False
+            self._name_button.set_sensitive(True)
+            raise
+
+    def update_device_name(self, name):
+        """GTK thread. Shows a freshly-read device name in the entry.
+
+        The typed text is never clobbered: while the entry has focus (the
+        user is editing a new name) a passive read-back is skipped.
+        """
+        if not self._name_entry.has_focus():
+            self._name_entry.set_text(name if name is not None else "")
 
     def _on_factory_reset_clicked(self, btn):
         """Confirmation dialog (explicit and blocking) before the reset.
@@ -716,15 +790,23 @@ class BatteryWindow:
             self._system_button.set_sensitive(False)
             self._on_factory_reset()
 
-    def set_system_message(self, message, is_error=False):
-        """Non-blocking feedback of the last system operation (reset).
+    def set_system_message(self, message, is_error=False, op=None):
+        """Non-blocking feedback of the last system operation.
 
-        Also re-enables the reset button — the operation (reset + verify) has
-        finished, whether it succeeded or failed.
+        `op` selects which busy flag is cleared and which button is re-enabled
+        once that operation finished: "system" (factory reset), "name"
+        (rename) or None (passive read errors — no busy flag is lifted, so a
+        passive error can never unlock an in-flight operation). The error/red
+        markup behavior is unchanged.
         """
-        if getattr(self, "_system_busy", False):
-            self._system_busy = False
-            self._system_button.set_sensitive(True)
+        if op == "system":
+            if getattr(self, "_system_busy", False):
+                self._system_busy = False
+                self._system_button.set_sensitive(True)
+        elif op == "name":
+            if getattr(self, "_name_busy", False):
+                self._name_busy = False
+                self._name_button.set_sensitive(True)
         if is_error:
             self._system_status.set_markup(
                 "<span color='red'>%s</span>"
@@ -1254,6 +1336,14 @@ class BatteryWindow:
             )
             self._system_button.set_label(self._t("factory_reset_button"))
             self._system_hint.set_label(self._t("factory_reset_hint"))
+            self._name_title.set_markup(
+                "<b>%s</b>"
+                % GLib.markup_escape_text(self._t("device_name_section"))
+            )
+            self._name_entry.set_placeholder_text(
+                self._t("device_name_placeholder")
+            )
+            self._name_button.set_label(self._t("rename_button"))
             for name, cb in self._param_check.items():
                 cb.set_label(self._t("param_" + name))
             for name, (lbl, val) in self._param_state.items():
