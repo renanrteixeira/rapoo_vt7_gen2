@@ -8,8 +8,8 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.rapoo_vt7 import buttons as button_mod
-from src.rapoo_vt7 import i18n, parameters, protocol, settings
-from src.rapoo_vt7.device import RapooDevice, CommandTimeout
+from src.rapoo_vt7 import i18n, pairing, parameters, protocol, settings
+from src.rapoo_vt7.device import DeviceNotFound, RapooDevice, CommandTimeout
 
 
 def fmt(b):
@@ -462,6 +462,191 @@ def status_main(report7_window=6.0):
     return 0
 
 
+def _confirm_prompt(message):
+    """Prompt wrapper around input() so headless tests can inject an answer."""
+    return input(message)
+
+
+def _pair_destructive(args, stdin=None, prompt=None):
+    """Gate + plan for the destructive receiver-pairing commands (0xA0/0xA1).
+
+    Returns `([], None)` when no destructive flag is present (read-only mode).
+    Otherwise returns `(["start_match", ...], rf_bytes)` after the Ask First
+    gate passes. Raises `ValueError` with the refusal reason when:
+      - `--write-rf` does not carry exactly 4 hex bytes,
+      - `--i-understand-risks` is missing,
+      - stdin is not a TTY (auto-refuse — no prompt, no hang), or
+      - the human does not type the confirmation word.
+    """
+    if stdin is None:
+        stdin = sys.stdin
+    if prompt is None:
+        prompt = _confirm_prompt
+    destructive = []
+    rf_bytes = None
+    if args.start_match:
+        destructive.append("start_match")
+    if args.write_rf:
+        try:
+            rf_bytes = bytes.fromhex(args.write_rf)
+        except ValueError:
+            raise ValueError(
+                "--write-rf must be a hex string (got {!r})".format(args.write_rf)
+            )
+        if len(rf_bytes) != 4:
+            raise ValueError(
+                "--write-rf must be exactly 4 bytes (8 hex digits)"
+            )
+        destructive.append("write_rf")
+    if not destructive:
+        return [], None
+    if not args.i_understand_risks:
+        raise ValueError(
+            "destructive pairing commands (0xA0/0xA1) require "
+            "--i-understand-risks (Ask First)"
+        )
+    if not stdin.isatty():
+        raise ValueError(
+            "destructive pairing commands need a TTY for confirmation; "
+            "stdin is not a TTY — refused (no prompt)"
+        )
+    try:
+        answer = prompt(
+            "This changes the receiver's pairing state (0xA0 start match / "
+            "0xA1 write RF). Type 'yes' to continue: "
+        )
+    except EOFError:
+        raise ValueError("confirmation not given (EOF)")
+    if answer.strip().lower() != "yes":
+        raise ValueError("confirmation not given")
+    return destructive, rf_bytes
+
+
+def pair_discover_main(window=6.0, want_result=False, destructive=None, rf_bytes=None):
+    """Opens the 2.4G receiver ONLY (prefix 0xA5) and runs the read-only
+    receiver-pairing discovery probes.
+
+    Safe probes: connected-mouse VID/PID poll (`pairing.decode_connected_vid_pid`),
+    an optional 0xA7 match-result read (raw dump, only behind `want_result`),
+    and a fixed `window`-second listen for raw reports. `destructive` (already
+    Ask First gated by `main`) fires the 0xA0/0xA1 commands and dumps their raw
+    replies. A probe timeout marks the dump "partial" and exits non-zero; empty
+    replies are printed raw and noted as asleep (non-fatal). When no receiver
+    is present `open(prefix=0xA5)` raises `DeviceNotFound` first — the USB-cable
+    mouse is never read.
+    """
+    dev = RapooDevice()
+    try:
+        dev.open(prefix=protocol.PREFIX_WIRELESS)
+    except DeviceNotFound as exc:
+        print(
+            "ERROR: 2.4G receiver (24ae:1413) not found — no configuration "
+            "interface with prefix 0xA5 ({}). Pairing commands target the "
+            "receiver; plug it in, or use --status/--dump for the mouse.".format(
+                exc
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as exc:
+        print(i18n.tr("probe_error_open", error=exc), file=sys.stderr)
+        return 1
+    partial = False
+    try:
+        print("== Receiver pairing discovery (receiver iface: {}) ==".format(dev.path))
+        print("== 3-step pairing flow (A Hub deviceMatcher) ==")
+        for i, step in enumerate(pairing.PAIRING_FLOW.values(), 1):
+            print("  {}. {}".format(i, step))
+        try:
+            connected = pairing.decode_connected_vid_pid(dev)
+        except CommandTimeout as exc:
+            print("  connected mouse VID/PID: no response ({})".format(exc))
+            partial = True
+        except OSError as exc:
+            print(
+                "  connected mouse VID/PID: read failed: {}".format(exc),
+                file=sys.stderr,
+            )
+            partial = True
+        else:
+            print(
+                "  connected mouse VID: {:<8} PID: {}".format(
+                    connected["vid"], connected["pid"]
+                )
+            )
+        if want_result:
+            try:
+                resp = dev.query(protocol.PAIR_GET_RESULT, timeout=1.2)
+            except (CommandTimeout, OSError) as exc:
+                print("  match result (0xA7): no response ({})".format(exc))
+                partial = True
+            else:
+                result = resp[2] if len(resp) > 2 else None
+                print(
+                    "  match result (0xA7) raw: {}  reply byte: {!s}".format(
+                        fmt(resp), result
+                    )
+                )
+        for cmd in destructive or []:
+            try:
+                frame = pairing.pairing_commands(rf_bytes=rf_bytes)[cmd]
+                dev.send_command(frame[1], frame[2:], prefix=frame[0])
+                resp = dev.read_response(timeout=1.2)
+            except (CommandTimeout, OSError) as exc:
+                print("  {} -> no reply: {}".format(cmd, exc), file=sys.stderr)
+                partial = True
+            except (KeyError, pairing.PairingDiscoveryError) as exc:
+                print(
+                    "  {} -> cannot build frame: {}".format(cmd, exc),
+                    file=sys.stderr,
+                )
+                partial = True
+            else:
+                if resp is None:
+                    print(
+                        "  {} -> no reply (timeout)".format(cmd),
+                        file=sys.stderr,
+                    )
+                    partial = True
+                else:
+                    print("  {} -> {}".format(cmd, fmt(resp)))
+        print("== Raw reports ({}s listen window; move the mouse) ==".format(window))
+        end = time.time() + window
+        while time.time() < end:
+            try:
+                data = dev.read_report(0.5)
+            except OSError as exc:
+                print(
+                    "  listen read failed: {}".format(exc),
+                    file=sys.stderr,
+                )
+                partial = True
+                break
+            if not data:
+                continue
+            note = ""
+            if (
+                data[0] == protocol.REPORT_CMD
+                and len(data) > 1
+                and data[1] == protocol.RESP_EMPTY
+            ):
+                note = "  (empty — receiver/mouse asleep)"
+            print(
+                "  <- rid={:02d} len={} {}{}".format(
+                    data[0], len(data), fmt(data), note
+                )
+            )
+    finally:
+        dev.close()
+    if partial:
+        print(
+            "NOTE: discovery partial — some probes got no response.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def dump_main():
     dev = RapooDevice()
     try:
@@ -517,12 +702,69 @@ def main():
         help="read every registered EEPROM field (raw/decoded), print format "
         "hypotheses and cross-validate against the passive report 7, then exit",
     )
+    group.add_argument(
+        "--pair-discover",
+        action="store_true",
+        help="open the 2.4G receiver only and run the receiver-pairing "
+        "discovery probes (connected-mouse VID/PID poll, optional 0xA7 result, "
+        "raw report dump over a fixed listen window), print the 3-step pairing "
+        "flow, then exit",
+    )
+    parser.add_argument(
+        "--pair-result",
+        action="store_true",
+        help="(with --pair-discover) also read the 0xA7 match result and dump "
+        "it raw",
+    )
+    parser.add_argument(
+        "--start-match",
+        action="store_true",
+        help="(with --pair-discover) fire 0xA0 enter-pairing-mode; "
+        "DESTRUCTIVE — requires --i-understand-risks and a TTY confirmation",
+    )
+    parser.add_argument(
+        "--write-rf",
+        metavar="RFHEX",
+        help="(with --pair-discover) fire 0xA1 write-RF with the given 4-byte "
+        "hex RF address; DESTRUCTIVE — requires --i-understand-risks and a TTY "
+        "confirmation",
+    )
+    parser.add_argument(
+        "--i-understand-risks",
+        action="store_true",
+        help="acknowledge the destructive receiver-pairing commands (Ask First)",
+    )
     args = parser.parse_args()
+
+    if not args.pair_discover and (
+        args.pair_result
+        or args.start_match
+        or args.write_rf
+        or args.i_understand_risks
+    ):
+        print(
+            "ERROR: --pair-result/--start-match/--write-rf/--i-understand-risks "
+            "only apply with --pair-discover",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.dump:
         return dump_main()
     if args.status:
         return status_main()
+    if args.pair_discover:
+        try:
+            destructive, rf_bytes = _pair_destructive(args)
+        except ValueError as exc:
+            print("REFUSED: {}".format(exc), file=sys.stderr)
+            return 2
+        return pair_discover_main(
+            window=6.0,
+            want_result=args.pair_result,
+            destructive=destructive,
+            rf_bytes=rf_bytes,
+        )
 
     dev = RapooDevice()
     try:

@@ -99,6 +99,9 @@ firmware does **not** respond to it.
   | 0xA8 | factory_update | — |
   | 0xAA | **get_battery_level** | — |
   | 0xAD | return_factory_settings | — |
+  | 0xA0 | **enter pairing mode** (receiver) | `[0x81]` — DESTRUCTIVE; Ask First |
+  | 0xA1 | **write RF** (receiver) | `[0x8F, rf0..rf3]` — DESTRUCTIVE; Ask First |
+  | 0xA7 | **get match result** (receiver) | — reply byte `data[2]`: 0 = failed; other 🔶 |
 
 ### 3.2 Reply (INPUT Report 6)
 On hidraw the reply arrives as an **input report 6** (the feature report 8/9 is
@@ -351,6 +354,11 @@ captured before any write.
       273 OK (review fixes → 283 OK). One defer: `_on_set_rf` English string
       (story 3-2).
 - [ ] **B5** System: factory reset, device name, receiver pairing
+      — receiver-pairing **protocol discovery done** (2026-08-16, story 5-3):
+      commands `0xA0`/`0xA1`/`0xA7` + connected-mouse VID/PID poll mapped in
+      `protocol.py`/`pairing.py`; `tools/probe.py --pair-discover` (receiver-only
+      open via `open(prefix=0xA5)`, read-only probes + raw dump + 3-step flow,
+      destructive writes Ask First + TTY). On-device validation pending.
 
 ---
 

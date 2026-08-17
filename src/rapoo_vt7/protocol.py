@@ -26,6 +26,16 @@ FACTORY_UPDATE = 0xA8           # 168
 GET_BATTERY_LEVEL = 0xAA        # 170
 RETURN_FACTORY_SETTINGS = 0xAD  # 173
 
+# Receiver pairing (A Hub `deviceMatcher`, story 5-3; unused 0xA0-0xAF slots).
+# Sent to the RECEIVER (prefix 0xA5). 0xA0/0xA1 are DESTRUCTIVE (they alter the
+# receiver's pairing state) — no app write path, probe-only behind an Ask First
+# gate. 0xA7 is read-only but its reply semantics are unvalidated (🔶).
+PAIR_START_MATCH = 0xA0         # enter pairing mode (sub-arg 0x81)
+PAIR_WRITE_RF = 0xA1            # write the 4-byte RF address (sub-arg 0x8F)
+PAIR_GET_RESULT = 0xA7          # read the match result (0 = failed; other 🔶)
+PAIR_MATCH_SUB = 0x81           # sendStartMatch payload byte
+PAIR_WRITE_RF_SUB = 0x8F        # sendWriteRF payload byte (followed by 4 RF bytes)
+
 # Reply via input report 6: data[0] == 0x01 indicates a valid response/ACK.
 # Reports with data[0] == 0x00 are "empty" (mouse asleep / heartbeat).
 RESP_ACK = 0x01
@@ -89,6 +99,14 @@ EEPROM_READ_MAX = 24           # firmware limit per read_eeprom/write_eeprom cal
 EEPROM_CURRENT_CONNECT_PROTOCOL = (0x04, 0x01)
 EEPROM_CONFIG_CURRENT = (0x0C, 0x01)
 EEPROM_RF_PROTOCOL_SETTING = (0x60, 0x00)
+
+# Receiver-pairing connected-mouse poll (A Hub BaseSetting
+# `getConnectedMouseVid`/`getConnectedMousePid`, 2026-08-16): read_eeprom 2 B
+# LE at these raw addresses reports the mouse the receiver is paired to
+# (0x24AE VID / 0x4613 PID when attached; 0 = none). These are absolute
+# addresses passed straight to read_eeprom, NOT bank-0 offsets.
+CONNECTED_MOUSE_VID_ADDR = (0x00, 0x00)
+CONNECTED_MOUSE_PID_ADDR = (0x04, 0x00)
 
 # "Double-byte" (2-byte LE) addresses of the main fields in bank 0.
 # 0 = MOUSE_LEFT ... (see docs/rapoo_hub_app.js -> table "yh")

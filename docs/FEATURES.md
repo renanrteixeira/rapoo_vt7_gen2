@@ -131,7 +131,7 @@ their method derives from the bundle and needs a write test first.
 |---|---|---|
 | Factory reset | `0xAD` `return_factory_settings` | ✅ implemented (`system.py` + "Sistema" tab: confirmation dialog + post-reset verification; command only — never writes EEPROM) |
 | Firmware update | `0xA8` `factory_update` + download | requires **wired mode**; risky — last phase |
-| Receiver pairing | app flow (`deviceMatcher`) | 3 steps (connect wired, position, press L+M+R); commands ⚠️ not mapped |
+| Receiver pairing | app flow (`deviceMatcher`) | 3 steps (receiver + wired mouse → disconnect + power-cycle → press L+M+R); **🔶 commands mapped (2026-08-16)** — see Phase 5 (command reference); on-device validation pending (this story, Ask First) |
 | Device name | `0x09EC` | `CONFIG_NAME` `_3(1004)` — **16B string ✅**; reads "CFG1" on device; ✅ read + rename (2026-08-13, `system.py` + "Sistema" tab) |
 | Connection mode | `0xA2` `get_work_mode` | ✅ implemented in `tools/probe.py` |
 | Firmware/version | `0xA3` `get_firmware` | ✅ implemented |
@@ -290,7 +290,29 @@ recorded here. When resuming, start from the end of the last marked phase.
       encoding: trim → UTF-8 bytes → reject > 16 → NUL-pad to 16 →
       `write_eeprom_verify`; read on tab open is passive, rename uses
       `submit(wake=True)`; blank / >16-byte inputs refused before any write).
-- [ ] Receiver pairing (3-step flow) — validate commands.
+- [ ] Receiver pairing (3-step flow) — commands mapped 🔶 (2026-08-16,
+      `protocol.py` + `pairing.py`); read-only probes in
+      `python3 tools/probe.py --pair-discover`; validate on device (Ask First
+      for the destructive 0xA0/0xA1 writes).
+
+**Receiver-pairing command reference** (A Hub `deviceMatcher` chunk
+`docs/index-B0XNTd12.js` + `BaseSetting-CsajUb0l.js`, extracted 2026-08-16;
+🔶 — reply shapes unvalidated on hidraw, destructive commands Ask First):
+| Command | Full frame (`[0xA5, cmdId, ...]`) | Notes |
+|---|---|---|
+| Enter pairing mode | `[0xA5, 0xA0, 0x81]` (`sendStartMatch`) | destructive — changes receiver pairing state |
+| Write RF address | `[0xA5, 0xA1, 0x8F, rf0..rf3]` (`sendWriteRF`) | 4 random RF bytes in the A Hub; destructive |
+| Get match result | `[0xA5, 0xA7]` (`sendGetMatchResult`) | WebHID reply byte 1 = hidraw `data[2]`: `0` = failed; other values 🔶 (dump raw) |
+| Connected-mouse VID | `read_eeprom` 2 B LE @ 0x0000 | `getConnectedMouseVid`; non-zero = attached |
+| Connected-mouse PID | `read_eeprom` 2 B LE @ 0x0004 | `getConnectedMousePid`; non-zero = attached |
+
+Read-only probes (VID/PID poll + raw report-6/7 dump) ship as
+`python3 tools/probe.py --pair-discover` — **on-device validation pending (this
+story, Ask First)**: the destructive `0xA0`/`0xA1` writes only run with
+`--start-match`/`--write-rf` + `--i-understand-risks` and a TTY confirmation.
+The report-7 pairing sub-commands (`0xB0` base data / `0xB1` pairing success /
+`0xB3` disconnect) are recognized in the bundle but only dumped raw here; `0xB1`
+decoding stays in Story 5-4.
 
 ### Phase 6 — Advanced (caution)
 - [ ] Macros: only if the VT7 support is confirmed (the bundle's macro protocol
