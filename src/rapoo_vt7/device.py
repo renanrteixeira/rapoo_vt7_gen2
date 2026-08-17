@@ -109,8 +109,20 @@ class RapooDevice:
         candidates.sort(key=lambda c: c[1] == protocol.PREFIX_USB, reverse=True)
         return candidates[0][0]
 
-    def open(self):
+    def open(self, prefix=None):
+        """Opens a configuration interface, optionally restricted to one
+        protocol prefix.
+
+        With `prefix=None` (default) the behavior is unchanged: it prefers the
+        mouse over the USB cable (0x4613, prefix 0xFF) and falls back to the
+        2.4G receiver (0x1413, prefix 0xA5) when no cable is present. With a
+        prefix (e.g. `protocol.PREFIX_WIRELESS` for the receiver-only pairing
+        discovery) the `_scan()` candidates are filtered to that prefix and
+        `DeviceNotFound` is raised when none matches.
+        """
         self._candidates = self._scan()
+        if prefix is not None:
+            self._candidates = [c for c in self._candidates if c[1] == prefix]
         if not self._candidates:
             raise DeviceNotFound(i18n.tr("device_not_found"))
         # Prefer the mouse over the USB cable (0x4613, prefix 0xFF); fall back

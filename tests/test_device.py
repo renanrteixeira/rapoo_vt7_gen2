@@ -6,7 +6,7 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.rapoo_vt7 import device, protocol
-from src.rapoo_vt7.device import CommandTimeout, RapooDevice
+from src.rapoo_vt7.device import CommandTimeout, DeviceNotFound, RapooDevice
 
 
 class FakeClock:
@@ -252,6 +252,74 @@ class WriteEepromVerifyTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 dev.write_eeprom_verify((0x98, 0x08), data)
         self.assertEqual(mwrite.call_count, 2)
+
+
+class OpenPrefixFilterTest(unittest.TestCase):
+    """The receiver-only selection (D1a): open(prefix=...) must filter the
+    _scan() candidates by protocol prefix and raise DeviceNotFound when no
+    candidate matches — the USB-cable mouse (prefix 0xFF) is never opened."""
+
+    def _candidates(self, pairs):
+        return [(path, prefix) for path, prefix in pairs]
+
+    def test_open_with_prefix_wireless_selects_receiver(self):
+        dev = RapooDevice()
+        dev._scan = lambda: self._candidates(
+            [
+                ("/dev/hidraw3", protocol.PREFIX_USB),
+                ("/dev/hidraw2", protocol.PREFIX_WIRELESS),
+            ]
+        )
+        with mock.patch.object(device.os, "open", return_value=7):
+            dev.open(prefix=protocol.PREFIX_WIRELESS)
+        self.assertEqual(dev.path, "/dev/hidraw2")
+        self.assertEqual(dev._prefix, protocol.PREFIX_WIRELESS)
+        self.assertEqual(dev._active, 0)
+        dev.close()
+
+    def test_open_with_prefix_usb_selects_cable_mouse(self):
+        dev = RapooDevice()
+        dev._scan = lambda: self._candidates(
+            [
+                ("/dev/hidraw3", protocol.PREFIX_USB),
+                ("/dev/hidraw2", protocol.PREFIX_WIRELESS),
+            ]
+        )
+        with mock.patch.object(device.os, "open", return_value=7):
+            dev.open(prefix=protocol.PREFIX_USB)
+        self.assertEqual(dev.path, "/dev/hidraw3")
+        self.assertEqual(dev._prefix, protocol.PREFIX_USB)
+        dev.close()
+
+    def test_open_with_prefix_missing_raises_device_not_found(self):
+        dev = RapooDevice()
+        dev._scan = lambda: self._candidates(
+            [("/dev/hidraw3", protocol.PREFIX_USB)]
+        )
+        with mock.patch.object(device.os, "open") as mopen:
+            with self.assertRaises(DeviceNotFound):
+                dev.open(prefix=protocol.PREFIX_WIRELESS)
+        mopen.assert_not_called()
+
+    def test_open_default_prefers_usb_cable_over_receiver(self):
+        dev = RapooDevice()
+        dev._scan = lambda: self._candidates(
+            [
+                ("/dev/hidraw2", protocol.PREFIX_WIRELESS),
+                ("/dev/hidraw3", protocol.PREFIX_USB),
+            ]
+        )
+        with mock.patch.object(device.os, "open", return_value=7):
+            dev.open()
+        self.assertEqual(dev.path, "/dev/hidraw3")
+        self.assertEqual(dev._prefix, protocol.PREFIX_USB)
+        dev.close()
+
+    def test_open_default_no_candidate_raises_device_not_found(self):
+        dev = RapooDevice()
+        dev._scan = lambda: []
+        with self.assertRaises(DeviceNotFound):
+            dev.open()
 
 
 if __name__ == "__main__":

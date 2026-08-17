@@ -26,7 +26,7 @@ class FakeDev:
         self.data = data or {}
         self.report = report
 
-    def open(self):
+    def open(self, prefix=None):
         return self
 
     def close(self):
@@ -560,6 +560,40 @@ class DumpMainTest(unittest.TestCase):
             rc = probe.dump_main()
         self.assertEqual(rc, 1)
         self.assertFalse(os.path.exists(path))
+
+
+class PairDiscoverMainTest(unittest.TestCase):
+    def test_main_pair_discover_flag_runs_discovery(self):
+        dev = FakeDev(data={0x0000: b"\xAE\x24", 0x0004: b"\x13\x46"})
+        with mock.patch.object(sys, "argv", ["probe", "--pair-discover"]), \
+                mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out:
+            rc = probe.main()
+        self.assertEqual(rc, 0)
+        self.assertIn("VID: 24AE", out.getvalue())
+        self.assertIn("PID: 4613", out.getvalue())
+        self.assertIn("3-step pairing flow", out.getvalue())
+        self.assertLess(
+            out.getvalue().index("3-step pairing flow"),
+            out.getvalue().index("Raw reports"),
+            "3-step flow must print before the listen window so the human can act",
+        )
+
+    def test_main_pair_discover_refuses_destructive(self):
+        with mock.patch.object(probe, "RapooDevice") as mdev, \
+                mock.patch.object(
+                    sys, "argv", ["probe", "--pair-discover", "--start-match"]
+                ), mock.patch("sys.stderr", new=io.StringIO()):
+            rc = probe.main()
+        self.assertEqual(rc, 2)
+        mdev.assert_not_called()
+
+    def test_main_pair_discover_and_dump_mutually_exclusive(self):
+        with mock.patch.object(
+            sys, "argv", ["probe", "--pair-discover", "--dump"]
+        ):
+            with self.assertRaises(SystemExit):
+                probe.main()
 
 
 if __name__ == "__main__":
