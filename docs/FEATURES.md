@@ -131,7 +131,7 @@ their method derives from the bundle and needs a write test first.
 |---|---|---|
 | Factory reset | `0xAD` `return_factory_settings` | ✅ implemented (`system.py` + "Sistema" tab: confirmation dialog + post-reset verification; command only — never writes EEPROM) |
 | Firmware update | `0xA8` `factory_update` + download | requires **wired mode**; risky — last phase |
-| Receiver pairing | app flow (`deviceMatcher`) | 3 steps (receiver + wired mouse → disconnect + power-cycle → press L+M+R); **🔶 commands mapped (2026-08-16)** — see Phase 5 (command reference); on-device validation pending (this story, Ask First) |
+| Receiver pairing | app flow (`deviceMatcher`) | 3 steps (receiver + wired mouse → disconnect + power-cycle → press L+M+R); **🔶 commands mapped (2026-08-16), VID/PID poll + 0xA7 validated on device (2026-08-17)** — see Phase 5 (command reference); `0xA0`/`0xA1` replies feature-report-only (unreadable on hidraw input 6) |
 | Device name | `0x09EC` | `CONFIG_NAME` `_3(1004)` — **16B string ✅**; reads "CFG1" on device; ✅ read + rename (2026-08-13, `system.py` + "Sistema" tab) |
 | Connection mode | `0xA2` `get_work_mode` | ✅ implemented in `tools/probe.py` |
 | Firmware/version | `0xA3` `get_firmware` | ✅ implemented |
@@ -292,23 +292,29 @@ recorded here. When resuming, start from the end of the last marked phase.
       `submit(wake=True)`; blank / >16-byte inputs refused before any write).
 - [ ] Receiver pairing (3-step flow) — commands mapped 🔶 (2026-08-16,
       `protocol.py` + `pairing.py`); read-only probes in
-      `python3 tools/probe.py --pair-discover`; validate on device (Ask First
-      for the destructive 0xA0/0xA1 writes).
+      `python3 tools/probe.py --pair-discover`. **On-device validation
+      (2026-08-17, this story)**: VID/PID poll ✅ (`24AE/4613` via `read_eeprom`
+      0x0000/0x0004); `0xA7` ✅ (ACK on input 6, `data[2]=0` = "match failed" —
+      matches `sendGetMatchResult`); `0xA0`/`0xA1` 🔶 — sent, but their replies
+      come on the **feature report (8/9)**, which hidraw reads as zeroed, so no
+      input-6 reply is observable (not a probe failure). Receiver sleeps when no
+      wireless mouse is in range (USB-cable-only → all probes time out).
 
 **Receiver-pairing command reference** (A Hub `deviceMatcher` chunk
 `docs/index-B0XNTd12.js` + `BaseSetting-CsajUb0l.js`, extracted 2026-08-16;
-🔶 — reply shapes unvalidated on hidraw, destructive commands Ask First):
+✅ = reply shape validated on hidraw; 🔶 = feature-report-only / unvalidated,
+destructive commands Ask First):
 | Command | Full frame (`[0xA5, cmdId, ...]`) | Notes |
 |---|---|---|
-| Enter pairing mode | `[0xA5, 0xA0, 0x81]` (`sendStartMatch`) | destructive — changes receiver pairing state |
-| Write RF address | `[0xA5, 0xA1, 0x8F, rf0..rf3]` (`sendWriteRF`) | 4 random RF bytes in the A Hub; destructive |
-| Get match result | `[0xA5, 0xA7]` (`sendGetMatchResult`) | WebHID reply byte 1 = hidraw `data[2]`: `0` = failed; other values 🔶 (dump raw) |
-| Connected-mouse VID | `read_eeprom` 2 B LE @ 0x0000 | `getConnectedMouseVid`; non-zero = attached |
-| Connected-mouse PID | `read_eeprom` 2 B LE @ 0x0004 | `getConnectedMousePid`; non-zero = attached |
+| Enter pairing mode | `[0xA5, 0xA0, 0x81]` (`sendStartMatch`) | destructive — changes receiver pairing state; 🔶 reply via feature report only |
+| Write RF address | `[0xA5, 0xA1, 0x8F, rf0..rf3]` (`sendWriteRF`) | 4 random RF bytes in the A Hub; destructive; 🔶 reply via feature report only |
+| Get match result | `[0xA5, 0xA7]` (`sendGetMatchResult`) | ✅ validated: ACK on input 6, hidraw `data[2]`: `0` = failed (observed `06 01 00...`); non-zero = success (🔶, unobserved) |
+| Connected-mouse VID | `read_eeprom` 2 B LE @ 0x0000 | ✅ validated `24AE`; non-zero = attached |
+| Connected-mouse PID | `read_eeprom` 2 B LE @ 0x0004 | ✅ validated `4613`; non-zero = attached |
 
 Read-only probes (VID/PID poll + raw report-6/7 dump) ship as
-`python3 tools/probe.py --pair-discover` — **on-device validation pending (this
-story, Ask First)**: the destructive `0xA0`/`0xA1` writes only run with
+`python3 tools/probe.py --pair-discover` — **read-only probes validated on
+device (2026-08-17)**: the destructive `0xA0`/`0xA1` writes only run with
 `--start-match`/`--write-rf` + `--i-understand-risks` and a TTY confirmation.
 The report-7 pairing sub-commands (`0xB0` base data / `0xB1` pairing success /
 `0xB3` disconnect) are recognized in the bundle but only dumped raw here; `0xB1`
