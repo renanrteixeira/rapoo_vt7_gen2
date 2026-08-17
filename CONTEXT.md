@@ -99,9 +99,9 @@ firmware does **not** respond to it.
   | 0xA8 | factory_update | — |
   | 0xAA | **get_battery_level** | — |
   | 0xAD | return_factory_settings | — |
-  | 0xA0 | **enter pairing mode** (receiver) | `[0x81]` — DESTRUCTIVE; Ask First |
-  | 0xA1 | **write RF** (receiver) | `[0x8F, rf0..rf3]` — DESTRUCTIVE; Ask First |
-  | 0xA7 | **get match result** (receiver) | — reply byte `data[2]`: 0 = failed; other 🔶 |
+  | 0xA0 | **enter pairing mode** (receiver) | `[0x81]` — DESTRUCTIVE; Ask First; reply only on feature report (zerada no hidraw) |
+  | 0xA1 | **write RF** (receiver) | `[0x8F, rf0..rf3]` — DESTRUCTIVE; Ask First; reply only on feature report |
+  | 0xA7 | **get match result** (receiver) | ✅ validated 2026-08-17: ACK no input 6, `data[2]`: 0 = falhou (observado `06 01 00...`); ≠0 🔶 |
 
 ### 3.2 Reply (INPUT Report 6)
 On hidraw the reply arrives as an **input report 6** (the feature report 8/9 is
@@ -358,7 +358,10 @@ captured before any write.
       commands `0xA0`/`0xA1`/`0xA7` + connected-mouse VID/PID poll mapped in
       `protocol.py`/`pairing.py`; `tools/probe.py --pair-discover` (receiver-only
       open via `open(prefix=0xA5)`, read-only probes + raw dump + 3-step flow,
-      destructive writes Ask First + TTY). On-device validation pending.
+      destructive writes Ask First + TTY). **Read-only probes validated on device
+      2026-08-17** (VID/PID ✅ `24AE/4613`; `0xA7` ✅ `data[2]=0` = failed;
+      `0xA0`/`0xA1` 🔶 — replies feature-report-only, unreadable on hidraw;
+      receiver sleeps without a wireless mouse in range).
 
 ---
 
