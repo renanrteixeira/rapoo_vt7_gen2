@@ -33,11 +33,11 @@ development_status:
   epic-4-retrospective: optional
 
   # Phase 5 — System operations (CAP-8) — Stories 9–12
-  epic-5: in-progress
+  epic-5: done
   5-1-factory-reset-with-confirmation: done
   5-2-device-name-read-and-rename: done
   5-3-receiver-pairing-protocol-discovery: done
-  5-4-guided-receiver-pairing: review
+  5-4-guided-receiver-pairing: done
   epic-5-retrospective: optional
 
 action_items:
