@@ -576,7 +576,8 @@ def pair_discover_main(window=6.0, want_result=False, destructive=None, rf_bytes
             )
         if want_result:
             try:
-                resp = dev.query(protocol.PAIR_GET_RESULT, timeout=1.2)
+                frame = pairing.pairing_commands()["get_result"]
+                resp = dev.query(frame[1], frame[2:], timeout=1.2, prefix=frame[0])
             except (CommandTimeout, OSError) as exc:
                 print("  match result (0xA7): no response ({})".format(exc))
                 partial = True
@@ -591,6 +592,7 @@ def pair_discover_main(window=6.0, want_result=False, destructive=None, rf_bytes
             try:
                 frame = pairing.pairing_commands(rf_bytes=rf_bytes)[cmd]
                 dev.send_command(frame[1], frame[2:], prefix=frame[0])
+                print("  {} sent: {}".format(cmd, fmt(frame)))
                 resp = dev.read_response(timeout=1.2)
             except (CommandTimeout, OSError) as exc:
                 print("  {} -> no reply: {}".format(cmd, exc), file=sys.stderr)
@@ -604,13 +606,16 @@ def pair_discover_main(window=6.0, want_result=False, destructive=None, rf_bytes
             else:
                 if resp is None:
                     print(
-                        "  {} -> no reply (timeout)".format(cmd),
-                        file=sys.stderr,
+                        "  {} -> no input-6 reply (expected — 0xA0/0xA1 reply "
+                        "only on the feature report, unreadable on hidraw); "
+                        "watch report 7 / 0xA7 for the pairing result".format(cmd)
                     )
-                    partial = True
                 else:
                     print("  {} -> {}".format(cmd, fmt(resp)))
-        print("== Raw reports ({}s listen window; move the mouse) ==".format(window))
+        print(
+            "== Raw reports ({}s listen window; move the mouse, or press "
+            "L+M+R while matching to emit report 7) ==".format(window)
+        )
         end = time.time() + window
         while time.time() < end:
             try:
@@ -759,8 +764,13 @@ def main():
         except ValueError as exc:
             print("REFUSED: {}".format(exc), file=sys.stderr)
             return 2
+        try:
+            window = float(os.environ.get("PROBE_PAIR_WINDOW", "6.0"))
+        except ValueError:
+            print("REFUSED: PROBE_PAIR_WINDOW must be a float", file=sys.stderr)
+            return 2
         return pair_discover_main(
-            window=6.0,
+            window=window,
             want_result=args.pair_result,
             destructive=destructive,
             rf_bytes=rf_bytes,

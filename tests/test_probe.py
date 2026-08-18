@@ -566,7 +566,9 @@ class PairDiscoverMainTest(unittest.TestCase):
     def test_main_pair_discover_flag_runs_discovery(self):
         dev = FakeDev(data={0x0000: b"\xAE\x24", 0x0004: b"\x13\x46"})
         with mock.patch.object(sys, "argv", ["probe", "--pair-discover"]), \
-                mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch.dict(
+                    os.environ, {"PROBE_PAIR_WINDOW": "0.01"}, clear=False
+                ), mock.patch.object(probe, "RapooDevice", return_value=dev), \
                 mock.patch("sys.stdout", new=io.StringIO()) as out:
             rc = probe.main()
         self.assertEqual(rc, 0)

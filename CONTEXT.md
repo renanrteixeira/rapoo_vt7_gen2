@@ -101,7 +101,7 @@ firmware does **not** respond to it.
   | 0xAD | return_factory_settings | — |
   | 0xA0 | **enter pairing mode** (receiver) | `[0x81]` — DESTRUCTIVE; Ask First; reply only on feature report (zerada no hidraw) |
   | 0xA1 | **write RF** (receiver) | `[0x8F, rf0..rf3]` — DESTRUCTIVE; Ask First; reply only on feature report |
-  | 0xA7 | **get match result** (receiver) | ✅ validated 2026-08-17: ACK no input 6, `data[2]`: 0 = falhou (observado `06 01 00...`); ≠0 🔶 |
+  | 0xA7 | **get match result** (receiver) | ✅ validated 2026-08-17: ACK on input 6, `data[2]`: 0 = falhou (observado `06 01 00...`); ≠0 🔶 |
 
 ### 3.2 Reply (INPUT Report 6)
 On hidraw the reply arrives as an **input report 6** (the feature report 8/9 is

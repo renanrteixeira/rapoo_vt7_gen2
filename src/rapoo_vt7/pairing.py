@@ -128,6 +128,6 @@ def decode_connected_vid_pid(dev):
     vid = _decode_connected_field(vid_resp)
     pid = _decode_connected_field(pid_resp)
     return {
-        "vid": "none attached" if vid is None else "%04X" % vid,
-        "pid": "none attached" if pid is None else "%04X" % pid,
+        "vid": "none attached" if vid is None or vid == 0 else "%04X" % vid,
+        "pid": "none attached" if pid is None or pid == 0 else "%04X" % pid,
     }

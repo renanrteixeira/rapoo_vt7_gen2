@@ -26,7 +26,7 @@ FACTORY_UPDATE = 0xA8           # 168
 GET_BATTERY_LEVEL = 0xAA        # 170
 RETURN_FACTORY_SETTINGS = 0xAD  # 173
 
-# Receiver pairing (A Hub `deviceMatcher`, story 5-3; unused 0xA0-0xAF slots).
+# Receiver pairing (A Hub `deviceMatcher`, story 5-3; free 0xA0-0xAF slots).
 # Sent to the RECEIVER (prefix 0xA5). 0xA0/0xA1 are DESTRUCTIVE (they alter the
 # receiver's pairing state) — no app write path, probe-only behind an Ask First
 # gate. 0xA7 is read-only but its reply semantics are unvalidated (🔶).
