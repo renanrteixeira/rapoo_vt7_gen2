@@ -12,6 +12,13 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GLib, Gtk, Gdk, GdkPixbuf
 
 from . import buttons, dpi, i18n, parameters, performance as perf
+from .pairing_session import (
+    STATUS_CANCELLED,
+    STATUS_ERROR,
+    STATUS_FAILED,
+    STATUS_SUCCESS,
+    STATUS_TIMEOUT,
+)
 
 # Product render shown in the battery tab. Resolved relative to this package
 # (repo layout: <root>/assets/mouse2.png) so it also works from an install.
@@ -57,6 +64,42 @@ def _round_rect(ctx, x, y, w, h, r):
     ctx.arc(x + w - r, y + h - r, r, 0, 0.5 * math.pi)
     ctx.arc(x + r, y + h - r, r, 0.5 * math.pi, math.pi)
     ctx.close_path()
+
+
+# Terminal pairing statuses: a run that reached one of them is over — the busy
+# guard is released and the Start button re-enabled. Non-terminal states keep
+# the run in flight (steps highlighted, matching status).
+_PAIRING_TERMINAL = frozenset(
+    {STATUS_SUCCESS, STATUS_FAILED, STATUS_TIMEOUT, STATUS_CANCELLED, STATUS_ERROR}
+)
+
+PAIRING_STATUS_KEYS = {
+    STATUS_SUCCESS: "pairing_success",
+    STATUS_FAILED: "pairing_failed",
+    STATUS_TIMEOUT: "pairing_timeout",
+    STATUS_CANCELLED: "pairing_cancelled",
+    STATUS_ERROR: "pairing_error",
+}
+
+
+def pairing_render_plan(step_n, status):
+    """Pure pairing-block decision (no GTK, headless-testable).
+
+    Returns `(highlight, status_key, is_error)`: `highlight` is the 0-indexed
+    step to show as the current one, `status_key` the i18n key of the status
+    line and `is_error` whether the line must be rendered as an error (red).
+    `step_n` is the last step the session reported (0 = first, 2 = the L+M+R
+    step); a terminal status clamps it into 0..2 so an early error (e.g.
+    receiver-not-found at open, step 0) highlights step 1 instead of the L+M+R
+    step.
+    """
+    step = min(max(0, step_n or 0), 2)
+    if status is None:
+        return step, "pairing_matching", False
+    key = PAIRING_STATUS_KEYS.get(status)
+    if key is None:
+        return step, "pairing_matching", False
+    return step, key, status == STATUS_ERROR
 
 
 def params_render_plan(info, error):
@@ -315,6 +358,8 @@ class BatteryWindow:
         on_factory_reset=None,
         on_read_name=None,
         on_rename=None,
+        on_start_pairing=None,
+        on_cancel_pairing=None,
     ):
         self._lang = lang if lang in i18n.LANGS else "pt_BR"
         self._on_lang_change = on_lang_change
@@ -331,6 +376,8 @@ class BatteryWindow:
         self._on_factory_reset = on_factory_reset
         self._on_read_name = on_read_name
         self._on_rename = on_rename
+        self._on_start_pairing = on_start_pairing
+        self._on_cancel_pairing = on_cancel_pairing
         self._known = False
         self._asleep = False
         self._last = None
@@ -716,6 +763,137 @@ class BatteryWindow:
         self._system_hint.set_halign(Gtk.Align.CENTER)
         self._system_hint.set_margin_top(6)
         vbox.pack_start(self._system_hint, False, False, 0)
+
+        # Receiver pairing (story 5-4): a guided, user-confirmed session that
+        # mirrors the A Hub MatcherDialog. The destructive 0xA0/0xA1 commands
+        # only fire after a blocking confirmation dialog (never from any
+        # passive path); the session runs on its own thread + own fd and
+        # leaves BatteryMonitor untouched.
+        self._pair_busy = False
+        self._pair_last_status = None
+        self._pair_last_message = None
+        self._pair_current_step = 0
+        self._pair_title = Gtk.Label()
+        self._pair_title.set_markup(
+            "<b>%s</b>" % GLib.markup_escape_text(self._t("pairing_section"))
+        )
+        self._pair_title.set_halign(Gtk.Align.CENTER)
+        self._pair_title.set_margin_top(10)
+        vbox.pack_start(self._pair_title, False, False, 0)
+
+        self._pair_hint = Gtk.Label(label=self._t("pairing_hint"))
+        self._pair_hint.set_line_wrap(True)
+        self._pair_hint.set_halign(Gtk.Align.CENTER)
+        vbox.pack_start(self._pair_hint, False, False, 2)
+
+        pair_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        pair_row.set_halign(Gtk.Align.CENTER)
+        pair_row.set_margin_top(4)
+        self._pair_button = Gtk.Button(label=self._t("pairing_start"))
+        self._pair_button.connect("clicked", self._on_pairing_clicked)
+        pair_row.pack_start(self._pair_button, False, False, 0)
+        self._pair_cancel = Gtk.Button(label=self._t("pairing_stop"))
+        self._pair_cancel.set_sensitive(False)
+        self._pair_cancel.connect("clicked", self._on_cancel_clicked)
+        pair_row.pack_start(self._pair_cancel, False, False, 0)
+        vbox.pack_start(pair_row, False, False, 0)
+
+        self._pair_steps = []
+        for i in range(3):
+            step = Gtk.Label(label=self._t("pairing_step%d" % (i + 1)))
+            step.set_line_wrap(True)
+            step.set_halign(Gtk.Align.START)
+            step.set_margin_top(2)
+            vbox.pack_start(step, False, False, 0)
+            self._pair_steps.append(step)
+
+        self._pair_status = Gtk.Label(label=self._t("pairing_matching"))
+        self._pair_status.set_line_wrap(True)
+        self._pair_status.set_halign(Gtk.Align.CENTER)
+        self._pair_status.set_margin_top(6)
+        vbox.pack_start(self._pair_status, False, False, 0)
+
+    def _on_pairing_clicked(self, btn):
+        """Confirmation dialog (explicit and blocking) before the pairing.
+
+        The dialog re-reads its labels at show time (current language). OK
+        triggers the session through the `on_start_pairing` callback (main.py
+        starts the session on its own thread); Cancel closes without sending
+        anything. While a run is in flight the button is disabled and further
+        clicks are ignored, so two sessions never start back to back.
+        """
+        if getattr(self, "_pair_busy", False):
+            return
+        dialog = Gtk.MessageDialog(
+            transient_for=self._win,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.NONE,
+            text=self._t("pairing_dialog_title"),
+        )
+        dialog.format_secondary_text(self._t("pairing_dialog_message"))
+        dialog.add_button(self._t("pairing_cancel"), Gtk.ResponseType.CANCEL)
+        dialog.add_button(self._t("pairing_ok"), Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.OK and self._on_start_pairing:
+            # A fresh run: clear the stale terminal state from a previous
+            # session so the status line and step highlight start clean.
+            self._pair_last_status = None
+            self._pair_last_message = None
+            self._pair_current_step = 0
+            self._pair_busy = True
+            self._pair_button.set_sensitive(False)
+            self._pair_cancel.set_sensitive(True)
+            self.update_pairing_state(0, None, None)
+            self._on_start_pairing()
+
+    def _on_cancel_clicked(self, btn):
+        """Stop button clicked: requests an early end of the matching loop.
+        The busy flag is released by the terminal status callback."""
+        if getattr(self, "_pair_busy", False) and self._on_cancel_pairing:
+            self._on_cancel_pairing()
+
+    def update_pairing_state(self, step_n, status, message=None):
+        """Session progress/result on the GTK thread.
+
+        `step_n` (0-indexed) and `status` come from the session callbacks
+        (status None = still progressing). Non-terminal states highlight the
+        current step and show "matching"; a terminal status (success/failed/
+        timeout/cancelled/error) releases the busy guard, re-enables Start,
+        disables Stop and shows the localized result. `message` overrides the
+        status text for dynamic errors (localized by main.py).
+        """
+        highlight, key, is_error = pairing_render_plan(step_n, status)
+        for i, step in enumerate(self._pair_steps):
+            text = self._t("pairing_step%d" % (i + 1))
+            if i == highlight:
+                step.set_markup(
+                    "<b>%s</b>" % GLib.markup_escape_text(text)
+                )
+            else:
+                step.set_text(text)
+        if status in _PAIRING_TERMINAL:
+            self._pair_last_status = status
+            if message is not None:
+                self._pair_last_message = message
+            self._pair_current_step = step_n or 0
+            if getattr(self, "_pair_busy", False):
+                self._pair_busy = False
+                self._pair_button.set_sensitive(True)
+            self._pair_cancel.set_sensitive(False)
+            text = message if message is not None else self._t(key)
+            if is_error:
+                self._pair_status.set_markup(
+                    "<span color='red'>%s</span>"
+                    % GLib.markup_escape_text(text)
+                )
+            else:
+                self._pair_status.set_text(text)
+        else:
+            self._pair_current_step = step_n or 0
+            self._pair_status.set_text(self._t(key))
 
     def _on_tab_switch(self, notebook, page, page_num):
         """Notebook page switched: opening the System tab re-reads the device
@@ -1344,6 +1522,50 @@ class BatteryWindow:
                 self._t("device_name_placeholder")
             )
             self._name_button.set_label(self._t("rename_button"))
+            self._pair_title.set_markup(
+                "<b>%s</b>"
+                % GLib.markup_escape_text(self._t("pairing_section"))
+            )
+            self._pair_hint.set_label(self._t("pairing_hint"))
+            self._pair_button.set_label(self._t("pairing_start"))
+            self._pair_cancel.set_label(self._t("pairing_stop"))
+            for i, step in enumerate(self._pair_steps):
+                step.set_text(self._t("pairing_step%d" % (i + 1)))
+            status = self._pair_last_status
+            if status in _PAIRING_TERMINAL:
+                highlight, key, is_error = pairing_render_plan(
+                    self._pair_current_step, status
+                )
+                step_text = self._t("pairing_step%d" % (highlight + 1))
+                self._pair_steps[highlight].set_markup(
+                    "<b>%s</b>" % GLib.markup_escape_text(step_text)
+                )
+                # Re-render the localized result; a stored message (already
+                # localized by main.py) wins over the raw status key so the
+                # STATUS_ERROR placeholder never shows up after a retranslation.
+                text = self._pair_last_message or self._t(key)
+                if is_error:
+                    self._pair_status.set_markup(
+                        "<span color='red'>%s</span>"
+                        % GLib.markup_escape_text(text)
+                    )
+                else:
+                    self._pair_status.set_text(text)
+            elif self._pair_busy:
+                # Run in flight: re-highlight the reported step instead of
+                # leaving every step plain, and keep "matching".
+                current = min(max(0, self._pair_current_step or 0), 2)
+                for i, step in enumerate(self._pair_steps):
+                    text = self._t("pairing_step%d" % (i + 1))
+                    if i == current:
+                        step.set_markup(
+                            "<b>%s</b>" % GLib.markup_escape_text(text)
+                        )
+                    else:
+                        step.set_text(text)
+                self._pair_status.set_text(self._t("pairing_matching"))
+            else:
+                self._pair_status.set_text(self._t("pairing_matching"))
             for name, cb in self._param_check.items():
                 cb.set_label(self._t("param_" + name))
             for name, (lbl, val) in self._param_state.items():

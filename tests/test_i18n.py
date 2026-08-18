@@ -88,6 +88,11 @@ class I18nParityTest(unittest.TestCase):
                 "button_raw": {"hex": "03000100"},
                 "button_changed": {"button": "x", "fn": "y"},
                 "button_unknown_fn": {"fn": "x"},
+                "pairing_error": {"error": "x"},
+                "name_read_error": {"error": "x"},
+                "name_success": {"name": "x"},
+                "factory_reset_ack_error": {},
+                "factory_reset_verify_error": {},
             }
             for key, kwargs in formats.items():
                 try:

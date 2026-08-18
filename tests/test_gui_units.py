@@ -285,5 +285,77 @@ class ButtonsRenderPlanTest(unittest.TestCase):
         self.assertEqual(status[2]["n"], len(buttons.BUTTONS))
 
 
+class PairingRenderPlanTest(unittest.TestCase):
+    def test_none_status_keeps_step_and_shows_matching(self):
+        self.assertEqual(
+            gui.pairing_render_plan(1, None), (1, "pairing_matching", False)
+        )
+
+    def test_matching_status_is_not_terminal(self):
+        self.assertEqual(
+            gui.pairing_render_plan(2, "matching"), (2, "pairing_matching", False)
+        )
+
+    def test_success_highlights_reported_step_not_error(self):
+        self.assertEqual(
+            gui.pairing_render_plan(2, gui.STATUS_SUCCESS),
+            (2, "pairing_success", False),
+        )
+        self.assertEqual(
+            gui.pairing_render_plan(0, gui.STATUS_SUCCESS),
+            (0, "pairing_success", False),
+        )
+
+    def test_failed_highlights_reported_step_not_error(self):
+        self.assertEqual(
+            gui.pairing_render_plan(1, gui.STATUS_FAILED),
+            (1, "pairing_failed", False),
+        )
+
+    def test_timeout_highlights_reported_step_not_error(self):
+        self.assertEqual(
+            gui.pairing_render_plan(1, gui.STATUS_TIMEOUT),
+            (1, "pairing_timeout", False),
+        )
+
+    def test_cancelled_highlights_reported_step_not_error(self):
+        self.assertEqual(
+            gui.pairing_render_plan(1, gui.STATUS_CANCELLED),
+            (1, "pairing_cancelled", False),
+        )
+
+    def test_error_is_marked_error(self):
+        self.assertEqual(
+            gui.pairing_render_plan(1, gui.STATUS_ERROR),
+            (1, "pairing_error", True),
+        )
+
+    def test_terminal_step_clamped_into_0_2(self):
+        # An early error (e.g. receiver-not-found at open, step 0) must never
+        # highlight the L+M+R step; step_n is clamped into 0..2.
+        self.assertEqual(
+            gui.pairing_render_plan(0, gui.STATUS_ERROR),
+            (0, "pairing_error", True),
+        )
+        self.assertEqual(
+            gui.pairing_render_plan(None, gui.STATUS_ERROR),
+            (0, "pairing_error", True),
+        )
+        self.assertEqual(
+            gui.pairing_render_plan(99, gui.STATUS_ERROR),
+            (2, "pairing_error", True),
+        )
+
+    def test_unknown_status_falls_back_to_matching(self):
+        self.assertEqual(
+            gui.pairing_render_plan(0, "bogus"), (0, "pairing_matching", False)
+        )
+
+    def test_step_none_defaults_to_zero(self):
+        self.assertEqual(
+            gui.pairing_render_plan(None, None), (0, "pairing_matching", False)
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

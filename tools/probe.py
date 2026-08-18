@@ -576,7 +576,8 @@ def pair_discover_main(window=6.0, want_result=False, destructive=None, rf_bytes
             )
         if want_result:
             try:
-                resp = dev.query(protocol.PAIR_GET_RESULT, timeout=1.2)
+                frame = pairing.pairing_commands()["get_result"]
+                resp = dev.query(frame[1], frame[2:], timeout=1.2, prefix=frame[0])
             except (CommandTimeout, OSError) as exc:
                 print("  match result (0xA7): no response ({})".format(exc))
                 partial = True
@@ -591,6 +592,7 @@ def pair_discover_main(window=6.0, want_result=False, destructive=None, rf_bytes
             try:
                 frame = pairing.pairing_commands(rf_bytes=rf_bytes)[cmd]
                 dev.send_command(frame[1], frame[2:], prefix=frame[0])
+                print("  {} sent: {}".format(cmd, fmt(frame)))
                 resp = dev.read_response(timeout=1.2)
             except (CommandTimeout, OSError) as exc:
                 print("  {} -> no reply: {}".format(cmd, exc), file=sys.stderr)
@@ -604,13 +606,16 @@ def pair_discover_main(window=6.0, want_result=False, destructive=None, rf_bytes
             else:
                 if resp is None:
                     print(
-                        "  {} -> no reply (timeout)".format(cmd),
-                        file=sys.stderr,
+                        "  {} -> no input-6 reply (expected — 0xA0/0xA1 reply "
+                        "only on the feature report, unreadable on hidraw); "
+                        "watch report 7 / 0xA7 for the pairing result".format(cmd)
                     )
-                    partial = True
                 else:
                     print("  {} -> {}".format(cmd, fmt(resp)))
-        print("== Raw reports ({}s listen window; move the mouse) ==".format(window))
+        print(
+            "== Raw reports ({}s listen window; move the mouse, or press "
+            "L+M+R while matching to emit report 7) ==".format(window)
+        )
         end = time.time() + window
         while time.time() < end:
             try:
@@ -645,6 +650,112 @@ def pair_discover_main(window=6.0, want_result=False, destructive=None, rf_bytes
         )
         return 1
     return 0
+
+
+def pair_run_main(window=60.0, rf_bytes=None):
+    """Runs the full A Hub `MatcherDialog` flow on the real receiver.
+
+    Opens the 2.4G receiver ONLY (prefix 0xA5), prints the 3-step physical
+    flow, sends `start_match` + `write_rf` (full frames via
+    `pairing_commands()`; `rf_bytes` overrides the random RF), then runs the
+    bounded matching loop: it listens report 7 raw (flagging a `0xB1` success
+    sub-command), polls 0xA7 every ~1.5 s for `window` seconds and prints the
+    result-byte history. This is the ON-DEVICE validation harness: the run is
+    destructive (Ask First gated in `main` via `_pair_destructive`), the human
+    must follow the 3 steps while it runs, and its observed evidence pins the
+    success/failure semantics in FEATURES.md.
+    """
+    dev = RapooDevice()
+    try:
+        dev.open(prefix=protocol.PREFIX_WIRELESS)
+    except DeviceNotFound as exc:
+        print(
+            "ERROR: 2.4G receiver (24ae:1413) not found — no configuration "
+            "interface with prefix 0xA5 ({}). Pairing targets the receiver; "
+            "plug it in and re-run --pair-run.".format(exc),
+            file=sys.stderr,
+        )
+        return 1
+    except Exception as exc:
+        print(i18n.tr("probe_error_open", error=exc), file=sys.stderr)
+        return 1
+    try:
+        print("== Receiver pairing run (A Hub MatcherDialog flow) ==")
+        print("== 3-step pairing flow (deviceMatcher) ==")
+        for i, step in enumerate(pairing.PAIRING_FLOW.values(), 1):
+            print("  {}. {}".format(i, step))
+        frames = pairing.pairing_commands(rf_bytes=rf_bytes)
+        for cmd in ("start_match", "write_rf"):
+            frame = frames[cmd]
+            dev.send_command(frame[1], frame[2:], prefix=frame[0])
+            print("  {} sent: {}".format(cmd, fmt(frame)))
+        print(
+            "  (0xA0/0xA1 reply only on the feature report, unreadable on "
+            "hidraw — watch report 7 / 0xA7 for the pairing result)"
+        )
+        history = []
+        b1_seen = False
+        end = time.time() + window
+        next_poll = time.time()
+        while time.time() < end:
+            try:
+                data = dev.read_report(0.3)
+            except OSError as exc:
+                print(
+                    "  listen read failed: {}".format(exc),
+                    file=sys.stderr,
+                )
+                return 1
+            if data and data[0] == protocol.REPORT_PASSIVE and len(data) > 1:
+                note = (
+                    "  <<< 0xB1 PAIRING SUCCESS"
+                    if data[1] == protocol.PAIR_SUCCESS_REPORT
+                    else ""
+                )
+                if data[1] == protocol.PAIR_SUCCESS_REPORT:
+                    b1_seen = True
+                print(
+                    "  <- rid={:02d} len={} {}{}".format(
+                        data[0], len(data), fmt(data), note
+                    )
+                )
+            if time.time() >= next_poll:
+                next_poll = time.time() + 1.5
+                try:
+                    frame = frames["get_result"]
+                    resp = dev.query(
+                        frame[1], frame[2:], timeout=1.0, prefix=frame[0]
+                    )
+                except (CommandTimeout, OSError) as exc:
+                    print("  match result (0xA7): no response ({})".format(exc))
+                    history.append(None)
+                    continue
+                result = pairing.match_result_byte(resp)
+                history.append(result)
+                print("  match result (0xA7): reply byte {!s}".format(result))
+        print("== Result ==")
+        print("  0xA7 result-byte history: {}".format(history))
+        print("  0xB1 (report 7) observed: {}".format(b1_seen))
+        if b1_seen:
+            print("  ==> SUCCESS signal observed (report-7 0xB1)")
+        nonzero = [r for r in history if r not in (None, 0)]
+        if nonzero:
+            print(
+                "  ==> non-zero 0xA7 bytes observed (success candidate): "
+                "{}".format(nonzero)
+            )
+        if 0 in history:
+            print("  ==> failed bytes observed (0xA7 data[2]==0)")
+        if not b1_seen and not nonzero and 0 not in history:
+            print(
+                "inconclusive: no result byte observed (receiver did not "
+                "respond?)",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
+    finally:
+        dev.close()
 
 
 def dump_main():
@@ -710,6 +821,14 @@ def main():
         "raw report dump over a fixed listen window), print the 3-step pairing "
         "flow, then exit",
     )
+    group.add_argument(
+        "--pair-run",
+        action="store_true",
+        help="run the full receiver-pairing flow (start match + write RF, then "
+        "poll 0xA7 and listen report 7 for the 0xB1 success sub-command over "
+        "PROBE_PAIR_WINDOW seconds), printing the result-byte history; "
+        "DESTRUCTIVE — requires --i-understand-risks and a TTY confirmation",
+    )
     parser.add_argument(
         "--pair-result",
         action="store_true",
@@ -736,7 +855,7 @@ def main():
     )
     args = parser.parse_args()
 
-    if not args.pair_discover and (
+    if not (args.pair_discover or args.pair_run) and (
         args.pair_result
         or args.start_match
         or args.write_rf
@@ -744,7 +863,7 @@ def main():
     ):
         print(
             "ERROR: --pair-result/--start-match/--write-rf/--i-understand-risks "
-            "only apply with --pair-discover",
+            "only apply with --pair-discover/--pair-run",
             file=sys.stderr,
         )
         return 2
@@ -753,14 +872,39 @@ def main():
         return dump_main()
     if args.status:
         return status_main()
+    if args.pair_run:
+        # The full flow always fires 0xA0 + 0xA1: reuse the Ask First gate.
+        args.start_match = True
+        try:
+            _destructive, rf_bytes = _pair_destructive(args)
+        except ValueError as exc:
+            print("REFUSED: {}".format(exc), file=sys.stderr)
+            return 2
+        try:
+            window = float(os.environ.get("PROBE_PAIR_WINDOW", "60.0"))
+        except ValueError:
+            print("REFUSED: PROBE_PAIR_WINDOW must be a float", file=sys.stderr)
+            return 2
+        if window <= 0:
+            print("REFUSED: PROBE_PAIR_WINDOW must be positive", file=sys.stderr)
+            return 2
+        return pair_run_main(window=window, rf_bytes=rf_bytes)
     if args.pair_discover:
         try:
             destructive, rf_bytes = _pair_destructive(args)
         except ValueError as exc:
             print("REFUSED: {}".format(exc), file=sys.stderr)
             return 2
+        try:
+            window = float(os.environ.get("PROBE_PAIR_WINDOW", "6.0"))
+        except ValueError:
+            print("REFUSED: PROBE_PAIR_WINDOW must be a float", file=sys.stderr)
+            return 2
+        if window <= 0:
+            print("REFUSED: PROBE_PAIR_WINDOW must be positive", file=sys.stderr)
+            return 2
         return pair_discover_main(
-            window=6.0,
+            window=window,
             want_result=args.pair_result,
             destructive=destructive,
             rf_bytes=rf_bytes,

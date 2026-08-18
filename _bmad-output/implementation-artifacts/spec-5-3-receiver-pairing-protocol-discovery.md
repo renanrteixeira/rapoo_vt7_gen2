@@ -80,7 +80,7 @@ context: ['docs/FEATURES.md', 'docs/index-B0XNTd12.js', 'docs/BaseSetting-CsajUb
 - Given `--pair-discover` with the receiver absent but a USB-cable mouse present, it reports "receiver not found" and exits non-zero without reading the mouse.
 - Given `--pair-discover` without explicit confirmation for destructive flags (or non-TTY stdin), no `0xA0`/`0xA1` write is attempted and refusal exits non-zero.
 - Given a short/non-ACK EEPROM reply, `decode_connected_vid_pid` returns "none attached" without raising.
-- Given the full suite, all existing + new tests pass (345 baseline + new).
+- Given the full suite, all existing + new tests pass (392 baseline + new).
 - Given FEATURES.md, the pairing row is 🔶 with the command reference and an explicit "on-device validation pending (this story, Ask First)" note; no write path or UI was added.
 
 ### Review Findings
@@ -104,6 +104,22 @@ context: ['docs/FEATURES.md', 'docs/index-B0XNTd12.js', 'docs/BaseSetting-CsajUb
 17. - [x] [Review][Patch] Empty `context: []` frontmatter — deps listed in frontmatter context.
 18. - [x] [Review][Patch] Bundle locators incomplete — byte locator added for `rapoo_hub_app.js` (~291387); chunk function names referenced.
 
+**Post-merge code review (2026-08-17):**
+
+- [x] [Review][Patch] Zero-valued VID/PID decodes to "0000" instead of "none attached" — `decode_connected_vid_pid` maps only `None` to "none attached"; a valid ACK with value 0 renders `"0000"`, contradicting the protocol comment "non-zero = attached" (a receiver with no mouse reads 0). `pairing.py:131-132`
+- [x] [Review][Patch] Destructive 0xA0/0xA1 no-reply marks the run partial and exits 1 — the replies are feature-report-only (unreadable on hidraw input 6), so a successful on-device destructive discovery always reports failure. No-reply for these commands is the expected outcome; the pairing result arrives via report 7. `probe.py:605-610`
+- [x] [Review][Patch] `test_pairing.py` main-dispatch tests duplicated in `test_probe.py` — `PairDiscoverMainDispatchTest` (test_pairing.py:437) and `PairDiscoverMainTest` (test_probe.py:565) both cover `--pair-discover` flag dispatch, refusal and dump-mutual-exclusion. `test_pairing.py:437`, `test_probe.py:565`
+- [x] [Review][Patch] 0xA7 reply-byte offset not pinned by a distinguishing fixture — `test_want_result_prints_raw_and_reply_byte` uses an all-zero reply (offset 2 == offset 3), so a wrong slice index would still pass. `test_pairing.py:290-306`
+- [x] [Review][Patch] Dispatch tests hardcode `window=6.0` via `main()` — `test_main_pair_discover_flag_runs_discovery` and `test_main_pair_discover_confirmed_runs_destructive` each spin a full 6 s listen loop (~12 s of the suite). `probe.py:763`
+- [x] [Review][Patch] `pairing_commands()["get_result"]` never consumed — the probe queries 0xA7 directly (`dev.query(PAIR_GET_RESULT)`) instead of using the builder's `get_result` frame, leaving that frame only unit-tested. `probe.py:579`
+- [x] [Review][Patch] OSError branch on VID/PID read has no test — `except OSError` at the connected-mouse poll prints "read failed" and marks partial; no test covers `read_eeprom` raising OSError. `probe.py:565-570`
+- [x] [Review][Patch] Listen-window header says "move the mouse" but the pairing action is "press L+M+R" — the printed instruction contradicts the 3-step flow printed above. `probe.py:613`
+- [x] [Review][Patch] RF bytes sent are never echoed — the destructive write_rf path prints only the reply, so the operator cannot see which RF was written. `probe.py:592-612`
+- [x] [Review][Patch] Stale "345 baseline + new" in spec AC/Verification — current suite is 392 tests. `spec-5-3` AC line 83 / Verification line 118
+- [x] [Review][Patch] protocol.py comment "unused 0xA0-0xAF slots" is inaccurate — 0xA2/0xA3/0xA4/0xA5/0xA8/0xAA/0xAD are already used; only 0xA0/0xA1/0xA7 were free. `protocol.py:29`
+- [x] [Review][Patch] CONTEXT.md:104 "ACK no input 6" is contradictory wording — the reply IS an ACK on input 6 (`06 01 …`); should read "ACK on input 6" to match FEATURES.md and the observed bytes. `CONTEXT.md:104`
+- [x] [Review][Defer] `device.py` `find_path` vs `open(prefix)` divergence — `find_path()` is unfiltered while `open(prefix)` filters by prefix; pre-existing entry point used by the battery hot-swap reconnect, not introduced by this story. `device.py:105-121`
+
 ## Spec Change Log
 
 _Empty until the first bad_spec loopback._
@@ -115,7 +131,7 @@ Commands extracted from `docs/index-B0XNTd12.js` (`sendStartMatch=[160,129]`, `s
 ## Verification
 
 **Commands:**
-- `python3 -m unittest discover -s tests` -- all pass (345 baseline + new)
+- `python3 -m unittest discover -s tests` -- all pass (392 tests)
 - `python3 -m compileall -q src/ tools/` -- no errors
 - `python3 tools/probe.py --pair-discover` (with real receiver, cable unplugged) -- opens the receiver, prints VID/PID + raw reports + 3-step flow; exit 0; NEVER fires 0xA0/0xA1 without the gated flag
 

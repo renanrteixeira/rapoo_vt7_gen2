@@ -1,5 +1,5 @@
 generated: 08-10-2026 20:13
-last_updated: 08-16-2026
+last_updated: 08-18-2026
 project: rapoo_vt7_gen2
 project_key: NOKEY
 tracking_system: file-system
@@ -36,8 +36,8 @@ development_status:
   epic-5: in-progress
   5-1-factory-reset-with-confirmation: done
   5-2-device-name-read-and-rename: done
-  5-3-receiver-pairing-protocol-discovery: review
-  5-4-guided-receiver-pairing: backlog
+  5-3-receiver-pairing-protocol-discovery: done
+  5-4-guided-receiver-pairing: review
   epic-5-retrospective: optional
 
 action_items:

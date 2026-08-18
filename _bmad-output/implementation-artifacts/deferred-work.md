@@ -136,3 +136,15 @@ modify existing entries; only append.
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-2-device-name-read-and-rename.md`
   summary: `_rename_error` and `_refresh_name.err` read `self._window._lang` on the monitor thread (race with a concurrent language change), the same pre-existing pattern as `_factory_reset_error` (recorded in the 5-1 deferrals) and the `_button_error`/`_param_error` handlers.
   evidence: main.py `_rename_error`/`_refresh_name.err` vs `_rename_done`/`_factory_reset_done`, which read the language after the idle_add hop; codebase-wide pattern, not 5-2-specific.
+
+## Deferred from: code review of spec-5-3-receiver-pairing-protocol-discovery (08-17-2026)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-3-receiver-pairing-protocol-discovery.md`
+  summary: `device.py` `find_path` vs `open(prefix)` divergence — `find_path()` (device.py:105) is an unfiltered selection while `open(prefix)` filters `_scan()` candidates by prefix; the two entry points coexist and nothing documents why.
+  evidence: device.py `find_path` :105-121 vs `open` :112; `find_path` pre-existed this story (used by the battery hot-swap reconnect); `open(prefix)` was added here. Pre-existing architecture, not a 5-3 regression.
+
+## Deferred from: code review of spec-5-4-guided-receiver-pairing (08-18-2026)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-4-guided-receiver-pairing.md`
+  summary: No rollback of the receiver's RF address after a failed/cancelled pairing session — `write_rf` (0xA1) changes the receiver's wireless address and a failed run can leave the previously-paired mouse orphaned with no in-app recovery.
+  evidence: `pairing_session.py` sends the random `write_rf` frame and never restores a prior address; no read-RF command is mapped in the protocol (the A Hub also never restores it) and the confirmation dialog warns the user; needs a reverse-mapped read-RF command + per-session RF preservation to fix.

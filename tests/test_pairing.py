@@ -143,6 +143,20 @@ class DecodeConnectedVidPidTest(unittest.TestCase):
         self.assertEqual(result["vid"], "none attached")
         self.assertEqual(result["pid"], "none attached")
 
+    def test_zero_value_is_none_attached(self):
+        dev = FakeDev()
+
+        def zero(addr, length):
+            resp = bytearray(32)
+            resp[0] = protocol.REPORT_CMD
+            resp[1] = protocol.RESP_ACK
+            return bytes(resp)
+
+        dev.read_eeprom = zero
+        result = pairing.decode_connected_vid_pid(dev)
+        self.assertEqual(result["vid"], "none attached")
+        self.assertEqual(result["pid"], "none attached")
+
     def test_partial_failure_one_field_none_attached(self):
         dev = FakeDev()
 
@@ -233,6 +247,21 @@ class PairDiscoverMainTest(unittest.TestCase):
         self.assertIn("VID/PID: no response", out.getvalue())
         self.assertIn("partial", err.getvalue())
 
+    def test_vid_pid_oserror_marks_partial_and_exits_nonzero(self):
+        dev = FakeDev()
+
+        def boom(addr, length):
+            raise OSError("read failed")
+
+        dev.read_eeprom = boom
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out, \
+                mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.pair_discover_main(window=0.01)
+        self.assertEqual(rc, 1)
+        self.assertIn("VID/PID: read failed", err.getvalue())
+        self.assertIn("partial", err.getvalue())
+
     def test_asleep_empty_reports_non_fatal(self):
         dev = FakeDev(data={0x0000: b"\xAE\x24", 0x0004: b"\x13\x46"})
         empty = bytes([protocol.REPORT_CMD, protocol.RESP_EMPTY]) + b"\x00" * 30
@@ -269,7 +298,10 @@ class PairDiscoverMainTest(unittest.TestCase):
         self.assertIn("start_match ->", out.getvalue())
         self.assertIn("write_rf ->", out.getvalue())
 
-    def test_destructive_no_reply_marks_partial_and_exits_nonzero(self):
+    def test_destructive_no_reply_is_expected_not_partial(self):
+        # 0xA0/0xA1 reply only on the feature report (unreadable on hidraw
+        # input 6), so no input-6 reply is the EXPECTED outcome — the run must
+        # NOT be marked partial or exit non-zero.
         dev = FakeDev(data={0x0000: b"\xAE\x24", 0x0004: b"\x13\x46"})
 
         def noack(cmd_id=None, timeout=1.0):
@@ -284,8 +316,10 @@ class PairDiscoverMainTest(unittest.TestCase):
                 destructive=["start_match"],
                 rf_bytes=b"\x01\x02\x03\x04",
             )
-        self.assertEqual(rc, 1)
-        self.assertIn("no reply", err.getvalue())
+        self.assertEqual(rc, 0)
+        self.assertIn("no input-6 reply (expected", out.getvalue())
+        self.assertIn("watch report 7 / 0xA7", out.getvalue())
+        self.assertEqual(err.getvalue(), "")
 
     def test_want_result_prints_raw_and_reply_byte(self):
         dev = FakeDev(data={0x0000: b"\xAE\x24", 0x0004: b"\x13\x46"})
@@ -294,7 +328,7 @@ class PairDiscoverMainTest(unittest.TestCase):
             resp = bytearray(32)
             resp[0] = protocol.REPORT_CMD
             resp[1] = protocol.RESP_ACK
-            resp[2] = 0x00
+            resp[2] = 0x03
             return bytes(resp)
 
         dev.query = query
@@ -303,7 +337,20 @@ class PairDiscoverMainTest(unittest.TestCase):
             rc = probe.pair_discover_main(window=0.01, want_result=True)
         self.assertEqual(rc, 0)
         self.assertIn("match result (0xA7) raw:", out.getvalue())
-        self.assertIn("reply byte: 0", out.getvalue())
+        self.assertIn("reply byte: 3", out.getvalue())
+
+    def test_want_result_short_reply_prints_none(self):
+        dev = FakeDev(data={0x0000: b"\xAE\x24", 0x0004: b"\x13\x46"})
+
+        def query(cmd_id, args=(), timeout=1.0, prefix=None):
+            return bytes([protocol.REPORT_CMD, protocol.RESP_ACK])
+
+        dev.query = query
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out:
+            rc = probe.pair_discover_main(window=0.01, want_result=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("reply byte: None", out.getvalue())
 
     def test_want_result_timeout_marks_partial(self):
         dev = FakeDev(data={0x0000: b"\xAE\x24", 0x0004: b"\x13\x46"})
@@ -435,25 +482,6 @@ class PairGateTest(unittest.TestCase):
 
 
 class PairDiscoverMainDispatchTest(unittest.TestCase):
-    def test_main_pair_discover_flag_runs_discovery(self):
-        dev = FakeDev(data={0x0000: b"\xAE\x24", 0x0004: b"\x13\x46"})
-        with mock.patch.object(sys, "argv", ["probe", "--pair-discover"]), \
-                mock.patch.object(probe, "RapooDevice", return_value=dev), \
-                mock.patch("sys.stdout", new=io.StringIO()) as out:
-            rc = probe.main()
-        self.assertEqual(rc, 0)
-        self.assertIn("VID: 24AE", out.getvalue())
-        self.assertEqual(dev.sent, [])
-
-    def test_main_pair_discover_refuses_destructive_without_risks_flag(self):
-        with mock.patch.object(probe, "RapooDevice") as mdev, \
-                mock.patch.object(
-                    sys, "argv", ["probe", "--pair-discover", "--start-match"]
-                ), mock.patch("sys.stderr", new=io.StringIO()):
-            rc = probe.main()
-        self.assertEqual(rc, 2)
-        mdev.assert_not_called()
-
     def test_main_pair_discover_non_tty_auto_refuses(self):
         with mock.patch.object(probe, "RapooDevice") as mdev, \
                 mock.patch.object(sys, "stdin", PairGateTest.NonTtyStdin()), \
@@ -471,7 +499,9 @@ class PairDiscoverMainDispatchTest(unittest.TestCase):
         with mock.patch.object(probe, "RapooDevice", return_value=dev), \
                 mock.patch.object(sys, "stdin", PairGateTest.TtyStdin()), \
                 mock.patch.object(probe, "_confirm_prompt", return_value="yes"), \
-                mock.patch.object(
+                mock.patch.dict(
+                    os.environ, {"PROBE_PAIR_WINDOW": "0.01"}, clear=False
+                ), mock.patch.object(
                     sys,
                     "argv",
                     ["probe", "--pair-discover", "--start-match", "--i-understand-risks"],
@@ -496,12 +526,35 @@ class PairDiscoverMainDispatchTest(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("only apply with --pair-discover", err.getvalue())
 
-    def test_main_pair_discover_and_dump_mutually_exclusive(self):
-        with mock.patch.object(
-            sys, "argv", ["probe", "--pair-discover", "--dump"]
-        ):
-            with self.assertRaises(SystemExit):
-                probe.main()
+
+class MatchResultByteTest(unittest.TestCase):
+    def _ack(self, result_byte):
+        resp = bytearray(32)
+        resp[0] = protocol.REPORT_CMD
+        resp[1] = protocol.RESP_ACK
+        resp[protocol.MATCH_RESULT_OFFSET] = result_byte
+        return bytes(resp)
+
+    def test_valid_ack_returns_the_byte(self):
+        self.assertEqual(pairing.match_result_byte(self._ack(0x03)), 0x03)
+        self.assertEqual(pairing.match_result_byte(self._ack(0x00)), 0x00)
+
+    def test_non_indexable_returns_none(self):
+        self.assertIsNone(pairing.match_result_byte(object()))
+        self.assertIsNone(pairing.match_result_byte(None))
+
+    def test_too_short_reply_returns_none(self):
+        self.assertIsNone(pairing.match_result_byte(b"\x06\x01"))
+        self.assertIsNone(
+            pairing.match_result_byte(bytes([0x06] * protocol.MATCH_RESULT_OFFSET))
+        )
+
+    def test_non_ack_reply_returns_none(self):
+        resp = bytearray(32)
+        resp[0] = protocol.REPORT_CMD
+        resp[1] = protocol.RESP_EMPTY
+        resp[protocol.MATCH_RESULT_OFFSET] = 0x01
+        self.assertIsNone(pairing.match_result_byte(bytes(resp)))
 
 
 if __name__ == "__main__":

@@ -12,6 +12,15 @@ from . import buttons, dpi, parameters, performance as perf, system
 from .gui import BatteryWindow
 from .i18n import LANGS
 from .icons import DEFAULT_ICON_DIR, render_all
+from .pairing_session import (
+    PairingSession,
+    ReceiverNotFound,
+    STATUS_CANCELLED,
+    STATUS_ERROR,
+    STATUS_FAILED,
+    STATUS_SUCCESS,
+    STATUS_TIMEOUT,
+)
 from .tray import Tray
 
 ICON_DIR = DEFAULT_ICON_DIR
@@ -61,6 +70,9 @@ class RapooApp(Gtk.Application):
         self._params_loaded = False
         self._buttons_loaded = False
         self._last_report_dpi = None
+        self._pair_session = None
+        self._pair_step = 0
+        self._quitting = False
         self._app_report = None  # last (gear, x) written by the app — report
         # echo of an app write is not re-notified
         # --hidden starts only in the systray (used by autostart). The short
@@ -109,6 +121,8 @@ class RapooApp(Gtk.Application):
             on_factory_reset=self._on_factory_reset,
             on_read_name=self._refresh_name,
             on_rename=self._on_rename,
+            on_start_pairing=self._on_start_pairing,
+            on_cancel_pairing=self._on_cancel_pairing,
         )
 
         self._monitor = BatteryMonitor(
@@ -598,6 +612,69 @@ class RapooApp(Gtk.Application):
             msg = str(exc)
         GLib.idle_add(self._window.set_system_message, msg, True, "name")
 
+    # --- System: receiver pairing (story 5-4, own thread + own fd) ---
+
+    def _on_start_pairing(self):
+        """Start button confirmed: launches the pairing session on its own
+        daemon thread. The session opens its OWN receiver fd (prefix 0xA5),
+        so the monitor is never touched; callbacks hop to the GTK thread via
+        idle_add. The window already holds the busy guard."""
+        if self._pair_session is not None and self._pair_session.is_running:
+            return
+        self._pair_step = 0
+        session = PairingSession(
+            on_step=self._on_pair_step,
+            on_result=self._on_pair_result,
+        )
+        self._pair_session = session
+        session.start()
+
+    def _on_cancel_pairing(self):
+        """Stop button clicked: requests an early end of the matching loop.
+        The session emits a cancelled result that releases the window busy."""
+        if self._pair_session is not None:
+            self._pair_session.cancel()
+
+    def _on_pair_step(self, n):
+        if self._quitting:
+            return
+        self._pair_step = n
+        GLib.idle_add(self._window.update_pairing_state, n, None, None)
+
+    def _on_pair_result(self, status, message):
+        if self._quitting:
+            return
+        GLib.idle_add(self._apply_pair_result, status, message)
+
+    def _apply_pair_result(self, status, message):
+        """GTK thread. Terminal session result: localizes it, updates the
+        window (releases the busy guard) and shows a notification. Dropped
+        silently while the app is quitting (widgets may be gone)."""
+        if self._quitting:
+            return
+        lang = LANGS[self._window._lang]
+        icon = None
+        if status == STATUS_SUCCESS:
+            msg = lang["pairing_success"]
+            icon = "dialog-information"
+        elif status == STATUS_FAILED:
+            msg = lang["pairing_failed"]
+            icon = "dialog-warning"
+        elif status == STATUS_TIMEOUT:
+            msg = lang["pairing_timeout"]
+            icon = "dialog-warning"
+        elif status == STATUS_CANCELLED:
+            msg = lang["pairing_cancelled"]
+        else:
+            if isinstance(message, ReceiverNotFound):
+                msg = lang["pairing_receiver_not_found"]
+            else:
+                msg = lang["pairing_error"].format(error=str(message))
+            icon = "dialog-error"
+        self._window.update_pairing_state(self._pair_step, status, msg)
+        if icon is not None:
+            Notify.Notification.new("Rapoo VT7", msg, icon).show()
+
     def _refresh_buttons(self):
         def done(info):
             GLib.idle_add(self._window.update_buttons, info)
@@ -735,6 +812,9 @@ class RapooApp(Gtk.Application):
         self._window.show()
 
     def _quit(self):
+        self._quitting = True
+        if self._pair_session is not None:
+            self._pair_session.cancel()
         self._monitor.stop()
         Notify.uninit()
         self.quit()
