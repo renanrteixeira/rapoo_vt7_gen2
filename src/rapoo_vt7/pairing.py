@@ -94,6 +94,24 @@ def pairing_commands(rf_bytes=None):
     }
 
 
+def match_result_byte(resp):
+    """Decodes the 0xA7 match-result byte (hidraw raw report `data[2]`).
+
+    Returns the int, or None when the reply is missing, too short
+    (`len <= MATCH_RESULT_OFFSET`) or not an ACK (`data[1] != RESP_ACK`) —
+    never raises IndexError and never decodes garbage (mirrors
+    `_decode_connected_field`). 0 = match failed (validated 2026-08-17).
+    """
+    if not hasattr(resp, "__len__"):
+        return None
+    if (
+        len(resp) <= protocol.MATCH_RESULT_OFFSET
+        or resp[1] != protocol.RESP_ACK
+    ):
+        return None
+    return resp[protocol.MATCH_RESULT_OFFSET]
+
+
 def _decode_connected_field(resp):
     """Decodes one 2-byte LE EEPROM field with the reply-shape guard.
 

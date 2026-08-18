@@ -527,5 +527,35 @@ class PairDiscoverMainDispatchTest(unittest.TestCase):
         self.assertIn("only apply with --pair-discover", err.getvalue())
 
 
+class MatchResultByteTest(unittest.TestCase):
+    def _ack(self, result_byte):
+        resp = bytearray(32)
+        resp[0] = protocol.REPORT_CMD
+        resp[1] = protocol.RESP_ACK
+        resp[protocol.MATCH_RESULT_OFFSET] = result_byte
+        return bytes(resp)
+
+    def test_valid_ack_returns_the_byte(self):
+        self.assertEqual(pairing.match_result_byte(self._ack(0x03)), 0x03)
+        self.assertEqual(pairing.match_result_byte(self._ack(0x00)), 0x00)
+
+    def test_non_indexable_returns_none(self):
+        self.assertIsNone(pairing.match_result_byte(object()))
+        self.assertIsNone(pairing.match_result_byte(None))
+
+    def test_too_short_reply_returns_none(self):
+        self.assertIsNone(pairing.match_result_byte(b"\x06\x01"))
+        self.assertIsNone(
+            pairing.match_result_byte(bytes([0x06] * protocol.MATCH_RESULT_OFFSET))
+        )
+
+    def test_non_ack_reply_returns_none(self):
+        resp = bytearray(32)
+        resp[0] = protocol.REPORT_CMD
+        resp[1] = protocol.RESP_EMPTY
+        resp[protocol.MATCH_RESULT_OFFSET] = 0x01
+        self.assertIsNone(pairing.match_result_byte(bytes(resp)))
+
+
 if __name__ == "__main__":
     unittest.main()

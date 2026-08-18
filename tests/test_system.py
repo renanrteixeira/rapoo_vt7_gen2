@@ -6,6 +6,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.rapoo_vt7 import i18n, main, parameters, protocol, system
 from src.rapoo_vt7.device import CommandTimeout
+from src.rapoo_vt7.pairing_session import (
+    STATUS_CANCELLED,
+    STATUS_ERROR,
+    STATUS_FAILED,
+    STATUS_SUCCESS,
+    STATUS_TIMEOUT,
+)
 
 # --- fakes ---------------------------------------------------------------
 
@@ -192,6 +199,28 @@ class FakeWindow:
 class FakeNotification:
     def show(self):
         pass
+
+
+class _FakePairingSession:
+    """PairingSession stand-in for main.py wiring tests: records the callback
+    kwargs and exposes `is_running`/`start`/`cancel`."""
+
+    def __init__(self, **kwargs):
+        self.on_step = kwargs.get("on_step")
+        self.on_result = kwargs.get("on_result")
+        self.started = False
+        self.cancelled = False
+        self.running = False
+
+    @property
+    def is_running(self):
+        return self.running
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
 
 
 # --- system module tests -------------------------------------------------
@@ -644,6 +673,7 @@ class _StubWidget:
         self.kwargs = kwargs
         self.halign = None
         self.sensitive = True
+        self._text = None
 
     def set_halign(self, halign):
         self.halign = halign
@@ -675,8 +705,8 @@ class _StubWidget:
     def set_tooltip_text(self, _text):
         pass
 
-    def set_text(self, _text):
-        pass
+    def set_text(self, text):
+        self._text = text
 
 
 class _StubButton(_StubWidget):
@@ -714,6 +744,15 @@ class _StubEntry(_StubWidget):
 
 class _StubVBox:
     def __init__(self):
+        self.children = []
+
+    def pack_start(self, child, *args):
+        self.children.append(child)
+
+
+class _StubBox(_StubWidget):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.children = []
 
     def pack_start(self, child, *args):
@@ -771,12 +810,15 @@ class FactoryResetTabTest(unittest.TestCase):
         original_button = gui.Gtk.Button
         original_label = gui.Gtk.Label
         original_entry = gui.Gtk.Entry
+        original_box = gui.Gtk.Box
         gui.Gtk.Button = _StubButton
         gui.Gtk.Label = _StubLabel
         gui.Gtk.Entry = _StubEntry
+        gui.Gtk.Box = _StubBox
         self.addCleanup(setattr, gui.Gtk, "Button", original_button)
         self.addCleanup(setattr, gui.Gtk, "Label", original_label)
         self.addCleanup(setattr, gui.Gtk, "Entry", original_entry)
+        self.addCleanup(setattr, gui.Gtk, "Box", original_box)
 
         window = gui.BatteryWindow.__new__(gui.BatteryWindow)
         window._lang = "en"
@@ -789,9 +831,9 @@ class FactoryResetTabTest(unittest.TestCase):
         labels = [
             w for w in vbox.children if isinstance(w, _StubLabel) and "label" in w.kwargs
         ]
-        self.assertEqual(
+        self.assertIn(
+            i18n.LANGS["en"]["factory_reset_hint"],
             [w.kwargs["label"] for w in labels],
-            [i18n.LANGS["en"]["factory_reset_hint"]],
         )
         buttons = [w for w in vbox.children if isinstance(w, _StubButton)]
         self.assertEqual(len(buttons), 2)
@@ -990,6 +1032,16 @@ class NameRowRetranslateTest(unittest.TestCase):
         window._name_title = _StubLabel()
         window._name_entry = _StubEntry()
         window._name_button = _StubButton()
+        window._pair_title = _StubLabel()
+        window._pair_hint = _StubLabel()
+        window._pair_button = _StubButton()
+        window._pair_cancel = _StubButton()
+        window._pair_steps = [_StubLabel() for _ in range(3)]
+        window._pair_status = _StubLabel()
+        window._pair_last_status = None
+        window._pair_last_message = None
+        window._pair_current_step = 0
+        window._pair_busy = False
         window._param_check = {}
         window._param_state = {}
         window._param_readonly = set()
@@ -1038,6 +1090,70 @@ class NameRowRetranslateTest(unittest.TestCase):
         )
         self.assertEqual(
             window._name_button.label, i18n.LANGS["en"]["rename_button"]
+        )
+
+    def test_retranslate_updates_the_pairing_block_to_english(self):
+        window = self._window()
+        window._on_lang_changed(_StubCombo("en"))
+        self.assertIn(
+            i18n.LANGS["en"]["pairing_section"], window._pair_title.markup
+        )
+        self.assertEqual(
+            window._pair_hint.label, i18n.LANGS["en"]["pairing_hint"]
+        )
+        self.assertEqual(
+            window._pair_button.label, i18n.LANGS["en"]["pairing_start"]
+        )
+        self.assertEqual(
+            window._pair_cancel.label, i18n.LANGS["en"]["pairing_stop"]
+        )
+        for i, step in enumerate(window._pair_steps):
+            self.assertEqual(
+                step._text,
+                i18n.LANGS["en"]["pairing_step%d" % (i + 1)],
+            )
+        self.assertEqual(
+            window._pair_status._text,
+            i18n.LANGS["en"]["pairing_matching"],
+        )
+
+    def test_retranslate_terminal_status_renders_stored_message(self):
+        from src.rapoo_vt7 import gui
+
+        window = self._window()
+        window._pair_last_status = gui.STATUS_ERROR
+        window._pair_last_message = i18n.LANGS["pt_BR"][
+            "pairing_receiver_not_found"
+        ]
+        window._pair_current_step = 0
+        window._on_lang_changed(_StubCombo("en"))
+        # The stored (already-localized) message wins over the raw STATUS_ERROR
+        # placeholder, and an early error highlights step 1, not the L+M+R one.
+        self.assertIn("red", window._pair_status.markup)
+        self.assertIn(
+            i18n.LANGS["pt_BR"]["pairing_receiver_not_found"],
+            window._pair_status.markup,
+        )
+        self.assertNotIn(
+            i18n.LANGS["en"]["pairing_error"], window._pair_status.markup
+        )
+        self.assertEqual(
+            window._pair_steps[0].markup,
+            "<b>%s</b>" % i18n.LANGS["en"]["pairing_step1"],
+        )
+
+    def test_retranslate_rehighlights_current_step_while_busy(self):
+        window = self._window()
+        window._pair_busy = True
+        window._pair_current_step = 1
+        window._on_lang_changed(_StubCombo("en"))
+        self.assertEqual(
+            window._pair_steps[1].markup,
+            "<b>%s</b>" % i18n.LANGS["en"]["pairing_step2"],
+        )
+        self.assertEqual(
+            window._pair_status._text,
+            i18n.LANGS["en"]["pairing_matching"],
         )
 
 
@@ -1170,6 +1286,494 @@ class DeviceNameI18nTest(unittest.TestCase):
             with self.subTest(locale=code):
                 lang["name_read_error"].format(error="timeout")
                 lang["name_success"].format(name="CFG1")
+
+
+class PairingDialogTest(unittest.TestCase):
+    """Headless coverage of the pairing confirmation dialog in gui.py: dialog
+    content (title/message/buttons), Cancel closes without starting a session,
+    OK triggers the session callback and arms the busy guard."""
+
+    def _window_and_dialog(self, result):
+        from src.rapoo_vt7 import gui
+
+        calls = []
+        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
+        window._lang = "en"
+        window._win = object()
+        window._pair_busy = False
+        window._pair_last_status = None
+        window._pair_last_message = None
+        window._pair_current_step = 0
+        window._pair_button = _StubButton()
+        window._pair_cancel = _StubButton()
+        window._pair_steps = [_StubLabel() for _ in range(3)]
+        window._pair_status = _StubLabel()
+        window._on_start_pairing = lambda: calls.append("pair")
+        window._on_cancel_pairing = lambda: calls.append("cancel")
+        _FakeDialog.result = result
+        _FakeDialog.created[:] = []
+        original = gui.Gtk.MessageDialog
+        gui.Gtk.MessageDialog = _FakeDialog
+        self.addCleanup(setattr, gui.Gtk, "MessageDialog", original)
+        return window, calls
+
+    def test_dialog_has_localized_warning_and_cancel_ok(self):
+        from src.rapoo_vt7 import gui
+
+        window, _calls = self._window_and_dialog(gui.Gtk.ResponseType.CANCEL)
+        window._on_pairing_clicked(None)
+        dialog = _FakeDialog.created[0]
+        self.assertEqual(
+            dialog.kwargs["text"], i18n.LANGS["en"]["pairing_dialog_title"]
+        )
+        self.assertEqual(
+            dialog.secondary, i18n.LANGS["en"]["pairing_dialog_message"]
+        )
+        self.assertIn("wireless address", dialog.secondary.lower())
+        self.assertIn(
+            (i18n.LANGS["en"]["pairing_cancel"], gui.Gtk.ResponseType.CANCEL),
+            dialog.buttons,
+        )
+        self.assertIn(
+            (i18n.LANGS["en"]["pairing_ok"], gui.Gtk.ResponseType.OK),
+            dialog.buttons,
+        )
+        self.assertEqual(dialog.default, gui.Gtk.ResponseType.CANCEL)
+        self.assertTrue(dialog.destroyed)
+
+    def test_cancel_closes_without_starting_session(self):
+        from src.rapoo_vt7 import gui
+
+        window, calls = self._window_and_dialog(gui.Gtk.ResponseType.CANCEL)
+        window._on_pairing_clicked(None)
+        self.assertEqual(calls, [])
+        self.assertFalse(window._pair_busy)
+        self.assertTrue(_FakeDialog.created[0].destroyed)
+
+    def test_ok_triggers_callback_and_marks_busy(self):
+        from src.rapoo_vt7 import gui
+
+        window, calls = self._window_and_dialog(gui.Gtk.ResponseType.OK)
+        window._on_pairing_clicked(None)
+        self.assertEqual(calls, ["pair"])
+        self.assertTrue(window._pair_busy)
+        self.assertFalse(window._pair_button.sensitive)
+        self.assertTrue(window._pair_cancel.sensitive)
+
+    def test_busy_ignores_second_click(self):
+        from src.rapoo_vt7 import gui
+
+        window, calls = self._window_and_dialog(gui.Gtk.ResponseType.OK)
+        window._on_pairing_clicked(None)
+        self.assertEqual(calls, ["pair"])
+        window._on_pairing_clicked(None)
+        self.assertEqual(calls, ["pair"])
+
+    def test_ok_resets_stale_terminal_state(self):
+        from src.rapoo_vt7 import gui
+
+        window, _calls = self._window_and_dialog(gui.Gtk.ResponseType.OK)
+        window._pair_last_status = gui.STATUS_ERROR
+        window._pair_last_message = "stale"
+        window._pair_current_step = 2
+        window._on_pairing_clicked(None)
+        self.assertIsNone(window._pair_last_status)
+        self.assertIsNone(window._pair_last_message)
+        self.assertEqual(window._pair_current_step, 0)
+
+    def test_retranslate_reads_current_language(self):
+        window, _calls = self._window_and_dialog(42)
+        window._lang = "pt_BR"
+        window._on_pairing_clicked(None)
+        dialog = _FakeDialog.created[0]
+        self.assertEqual(
+            dialog.kwargs["text"], i18n.LANGS["pt_BR"]["pairing_dialog_title"]
+        )
+        self.assertEqual(
+            dialog.secondary, i18n.LANGS["pt_BR"]["pairing_dialog_message"]
+        )
+
+
+class PairingWindowBehaviorTest(unittest.TestCase):
+    def _window(self):
+        from src.rapoo_vt7 import gui
+
+        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
+        window._lang = "en"
+        window._pair_busy = True
+        window._pair_last_status = None
+        window._pair_last_message = None
+        window._pair_current_step = 0
+        window._pair_button = _StubButton()
+        window._pair_cancel = _StubButton()
+        window._pair_steps = [_StubLabel() for _ in range(3)]
+        window._pair_status = _StubLabel()
+        return window
+
+    def test_update_non_terminal_highlights_step_and_shows_matching(self):
+        from src.rapoo_vt7 import gui
+
+        window = self._window()
+        window.update_pairing_state(1, None, None)
+        self.assertTrue(window._pair_busy)
+        self.assertEqual(
+            window._pair_steps[1].markup,
+            "<b>%s</b>" % i18n.LANGS["en"]["pairing_step2"],
+        )
+        self.assertEqual(
+            window._pair_status._text, i18n.LANGS["en"]["pairing_matching"]
+        )
+
+    def test_update_terminal_success_releases_busy_and_reenables_start(self):
+        from src.rapoo_vt7 import gui
+
+        window = self._window()
+        window.update_pairing_state(0, gui.STATUS_SUCCESS, None)
+        self.assertFalse(window._pair_busy)
+        self.assertTrue(window._pair_button.sensitive)
+        self.assertFalse(window._pair_cancel.sensitive)
+        self.assertEqual(window._pair_last_status, gui.STATUS_SUCCESS)
+        self.assertEqual(
+            window._pair_status._text, i18n.LANGS["en"]["pairing_success"]
+        )
+
+    def test_update_terminal_error_renders_red_with_message_override(self):
+        from src.rapoo_vt7 import gui
+
+        window = self._window()
+        window.update_pairing_state(0, gui.STATUS_ERROR, "boom")
+        self.assertFalse(window._pair_busy)
+        self.assertTrue(window._pair_button.sensitive)
+        self.assertFalse(window._pair_cancel.sensitive)
+        self.assertIn("red", window._pair_status.markup)
+        self.assertIn("boom", window._pair_status.markup)
+
+    def test_update_cancelled_keeps_busy_until_terminal_callback(self):
+        from src.rapoo_vt7 import gui
+
+        window = self._window()
+        window.update_pairing_state(0, gui.STATUS_CANCELLED, None)
+        self.assertFalse(window._pair_busy)
+        self.assertEqual(window._pair_last_status, gui.STATUS_CANCELLED)
+        self.assertEqual(
+            window._pair_status._text, i18n.LANGS["en"]["pairing_cancelled"]
+        )
+
+    def test_update_terminal_stores_message_and_step(self):
+        from src.rapoo_vt7 import gui
+
+        window = self._window()
+        window.update_pairing_state(1, gui.STATUS_ERROR, "boom")
+        self.assertEqual(window._pair_last_message, "boom")
+        self.assertEqual(window._pair_current_step, 1)
+
+    def test_update_terminal_without_message_keeps_previous(self):
+        from src.rapoo_vt7 import gui
+
+        window = self._window()
+        window._pair_last_message = "stale"
+        window.update_pairing_state(0, gui.STATUS_SUCCESS, None)
+        self.assertEqual(window._pair_last_message, "stale")
+
+    def test_update_non_terminal_records_step(self):
+        from src.rapoo_vt7 import gui
+
+        window = self._window()
+        window.update_pairing_state(2, None, None)
+        self.assertEqual(window._pair_current_step, 2)
+
+    def test_cancel_clicked_requests_cancel_when_busy(self):
+        from src.rapoo_vt7 import gui
+
+        window = self._window()
+        calls = []
+        window._on_cancel_pairing = lambda: calls.append("cancel")
+        window._on_cancel_clicked(None)
+        self.assertEqual(calls, ["cancel"])
+        window._pair_busy = False
+        window._on_cancel_clicked(None)
+        self.assertEqual(calls, ["cancel"], "stop outside a run is a no-op")
+
+
+class MainPairingTest(unittest.TestCase):
+    def _app(self):
+        app = main.RapooApp.__new__(main.RapooApp)
+        app._monitor = FakeMonitor()
+        app._window = FakeWindow()
+        app._pair_session = None
+        app._pair_step = 0
+        app._quitting = False
+        return app
+
+    def test_on_start_pairing_launches_a_session_with_callbacks(self):
+        app = self._app()
+        original = main.PairingSession
+        created = []
+
+        def factory(**kwargs):
+            session = _FakePairingSession(**kwargs)
+            created.append(session)
+            return session
+
+        main.PairingSession = factory
+        try:
+            app._on_start_pairing()
+        finally:
+            main.PairingSession = original
+        self.assertEqual(len(created), 1)
+        self.assertTrue(created[0].started)
+        self.assertIs(app._pair_session, created[0])
+        self.assertEqual(app._pair_step, 0)
+        self.assertTrue(callable(created[0].on_step))
+        self.assertTrue(callable(created[0].on_result))
+
+    def test_on_start_pairing_ignores_second_run_while_running(self):
+        app = self._app()
+        original = main.PairingSession
+        created = []
+
+        def factory(**kwargs):
+            session = _FakePairingSession(**kwargs)
+            created.append(session)
+            return session
+
+        main.PairingSession = factory
+        try:
+            app._on_start_pairing()
+            # A run is in flight now: a second start must not spawn again.
+            created[0].running = True
+            app._on_start_pairing()
+        finally:
+            main.PairingSession = original
+        self.assertEqual(len(created), 1)
+        self.assertTrue(created[0].started)
+
+    def test_on_cancel_pairing_cancels_the_session(self):
+        app = self._app()
+        cancelled = []
+        app._pair_session = type(
+            "S", (), {"cancel": lambda self: cancelled.append(1)}
+        )()
+        app._on_cancel_pairing()
+        self.assertEqual(cancelled, [1])
+        app._pair_session = None
+        app._on_cancel_pairing()  # no session -> no-op
+
+    def test_on_pair_step_forwards_to_the_window(self):
+        app = self._app()
+        updated = []
+        app._window.update_pairing_state = lambda *a: updated.append(a)
+        with _sync_idle():
+            app._on_pair_step(2)
+        self.assertEqual(app._pair_step, 2)
+        self.assertEqual(updated, [(2, None, None)])
+
+    def test_apply_result_success_localizes_and_notifies(self):
+        app = self._app()
+        updated = []
+        app._window.update_pairing_state = lambda *a: updated.append(a)
+        shown = []
+        originals = {
+            "new": main.Notify.Notification.new,
+            "idle_add": main.GLib.idle_add,
+        }
+
+        def fake_new(_app, body, _icon):
+            shown.append(body)
+            return FakeNotification()
+
+        main.Notify.Notification.new = fake_new
+        try:
+            app._apply_pair_result(STATUS_SUCCESS, None)
+        finally:
+            main.Notify.Notification.new = originals["new"]
+        self.assertEqual(
+            updated[-1],
+            (app._pair_step, STATUS_SUCCESS, i18n.LANGS["en"]["pairing_success"]),
+        )
+        self.assertEqual(shown, [i18n.LANGS["en"]["pairing_success"]])
+
+    def test_apply_result_failed_warns_without_success_icon(self):
+        app = self._app()
+        app._window.update_pairing_state = lambda *a: None
+        shown = []
+        originals = {}
+        originals["new"] = main.Notify.Notification.new
+
+        def fake_new(_app, body, _icon):
+            shown.append((body, _icon))
+            return FakeNotification()
+
+        main.Notify.Notification.new = fake_new
+        try:
+            app._apply_pair_result(STATUS_FAILED, None)
+        finally:
+            main.Notify.Notification.new = originals["new"]
+        self.assertEqual(
+            shown,
+            [(i18n.LANGS["en"]["pairing_failed"], "dialog-warning")],
+        )
+
+    def test_apply_result_receiver_not_found_is_localized(self):
+        app = self._app()
+        updated = []
+        app._window.update_pairing_state = lambda *a: updated.append(a)
+        shown = []
+        originals = {"new": main.Notify.Notification.new}
+
+        def fake_new(_app, body, _icon):
+            shown.append(body)
+            return FakeNotification()
+
+        main.Notify.Notification.new = fake_new
+        try:
+            app._apply_pair_result(
+                STATUS_ERROR, main.ReceiverNotFound("receiver")
+            )
+        finally:
+            main.Notify.Notification.new = originals["new"]
+        self.assertEqual(
+            updated[-1],
+            (
+                app._pair_step,
+                STATUS_ERROR,
+                i18n.LANGS["en"]["pairing_receiver_not_found"],
+            ),
+        )
+
+    def test_apply_result_generic_error_formats_message(self):
+        app = self._app()
+        updated = []
+        app._window.update_pairing_state = lambda *a: updated.append(a)
+        shown = []
+        originals = {"new": main.Notify.Notification.new}
+
+        def fake_new(_app, body, _icon):
+            shown.append(body)
+            return FakeNotification()
+
+        main.Notify.Notification.new = fake_new
+        try:
+            app._apply_pair_result(STATUS_ERROR, OSError("boom"))
+        finally:
+            main.Notify.Notification.new = originals["new"]
+        self.assertEqual(
+            updated[-1],
+            (
+                app._pair_step,
+                STATUS_ERROR,
+                i18n.LANGS["en"]["pairing_error"].format(error="boom"),
+            ),
+        )
+        self.assertEqual(shown, [i18n.LANGS["en"]["pairing_error"].format(error="boom")])
+
+    def test_apply_result_timeout_and_cancelled_localize(self):
+        app = self._app()
+        updated = []
+        app._window.update_pairing_state = lambda *a: updated.append(a)
+        shown = []
+        originals = {"new": main.Notify.Notification.new}
+
+        def fake_new(_app, body, _icon):
+            shown.append(body)
+            return FakeNotification()
+
+        main.Notify.Notification.new = fake_new
+        try:
+            app._apply_pair_result(STATUS_TIMEOUT, None)
+            app._apply_pair_result(STATUS_CANCELLED, None)
+        finally:
+            main.Notify.Notification.new = originals["new"]
+        self.assertEqual(
+            [u[2] for u in updated],
+            [i18n.LANGS["en"]["pairing_timeout"],
+             i18n.LANGS["en"]["pairing_cancelled"]],
+        )
+        # CANCELLED is quiet (no popup).
+        self.assertEqual(shown, [i18n.LANGS["en"]["pairing_timeout"]])
+
+    def test_quit_cancels_a_running_session(self):
+        app = self._app()
+        cancelled = []
+        app._pair_session = type(
+            "S", (), {"cancel": lambda self: cancelled.append(1)}
+        )()
+        app._monitor.stop = lambda: None
+        app.quit = lambda: None
+        originals = {"uninit": main.Notify.uninit}
+        main.Notify.uninit = lambda: None
+        try:
+            app._quit()
+        finally:
+            main.Notify.uninit = originals["uninit"]
+        self.assertEqual(cancelled, [1])
+        self.assertTrue(app._quitting)
+
+    def test_pair_callbacks_are_dropped_while_quitting(self):
+        app = self._app()
+        updated = []
+        app._window.update_pairing_state = lambda *a: updated.append(a)
+        app._quitting = True
+        with _sync_idle():
+            app._on_pair_step(2)
+            app._on_pair_result(STATUS_SUCCESS, None)
+            app._apply_pair_result(STATUS_SUCCESS, None)
+        self.assertEqual(app._pair_step, 0, "step must not advance while quitting")
+        self.assertEqual(
+            updated, [], "no idle_add may touch the window while quitting"
+        )
+
+    def test_quit_sets_quitting_before_cancelling(self):
+        app = self._app()
+        seen = []
+
+        class Session:
+            def cancel(self):
+                seen.append(app._quitting)
+
+        app._pair_session = Session()
+        app._monitor.stop = lambda: None
+        app.quit = lambda: None
+        originals = {"uninit": main.Notify.uninit}
+        main.Notify.uninit = lambda: None
+        try:
+            app._quit()
+        finally:
+            main.Notify.uninit = originals["uninit"]
+        self.assertEqual(seen, [True], "_quitting must be set before cancel()")
+
+
+class PairingI18nTest(unittest.TestCase):
+    def test_pairing_keys_present_in_every_locale(self):
+        for code, lang in i18n.LANGS.items():
+            for key in (
+                "pairing_section",
+                "pairing_start",
+                "pairing_stop",
+                "pairing_hint",
+                "pairing_dialog_title",
+                "pairing_dialog_message",
+                "pairing_cancel",
+                "pairing_ok",
+                "pairing_step1",
+                "pairing_step2",
+                "pairing_step3",
+                "pairing_matching",
+                "pairing_success",
+                "pairing_failed",
+                "pairing_timeout",
+                "pairing_cancelled",
+                "pairing_error",
+                "pairing_receiver_not_found",
+            ):
+                self.assertIn(
+                    key, lang, "locale %s missing key %r" % (code, key)
+                )
+
+    def test_pairing_format_strings_render_in_every_locale(self):
+        for code, lang in i18n.LANGS.items():
+            with self.subTest(locale=code):
+                lang["pairing_error"].format(error="boom")
 
 
 if __name__ == "__main__":

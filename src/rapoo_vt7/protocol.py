@@ -35,6 +35,13 @@ PAIR_WRITE_RF = 0xA1            # write the 4-byte RF address (sub-arg 0x8F)
 PAIR_GET_RESULT = 0xA7          # read the match result (0 = failed; other 🔶)
 PAIR_MATCH_SUB = 0x81           # sendStartMatch payload byte
 PAIR_WRITE_RF_SUB = 0x8F        # sendWriteRF payload byte (followed by 4 RF bytes)
+# Report-7 sub-command for a successful pairing (A Hub `VTnrf54LBaseParser`,
+# `s === 177` -> "配对成功"). Hidraw offset = WebHID byte 0 + 1 -> data[1].
+PAIR_SUCCESS_REPORT = 0xB1
+# The 0xA7 match-result byte is WebHID byte 1 = hidraw data[2] (raw report:
+# data[0] = report id, data[1] = ACK, data[2] = result). 0 = failed (validated
+# 2026-08-17); non-zero = success candidate until story 5-4 validation.
+MATCH_RESULT_OFFSET = 2
 
 # Reply via input report 6: data[0] == 0x01 indicates a valid response/ACK.
 # Reports with data[0] == 0x00 are "empty" (mouse asleep / heartbeat).

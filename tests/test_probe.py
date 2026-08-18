@@ -49,6 +49,32 @@ class FakeDev:
         return self.report
 
 
+class RunFakeDev(FakeDev):
+    """FakeDev + query/send_command for the --pair-run harness. `a7` is the
+    0xA7 match-result byte; `a7_error` makes the poll fail."""
+
+    def __init__(self, data=None, report=None, a7=0, a7_error=None):
+        super().__init__(data=data, report=report)
+        self.sent = []
+        self.a7 = a7
+        self.a7_error = a7_error
+
+    def send_command(self, cmd_id, args=(), prefix=None):
+        self.sent.append((cmd_id, tuple(args), prefix))
+        return bytes([prefix, cmd_id]) + bytes(args)
+
+    def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
+        if cmd_id != protocol.PAIR_GET_RESULT:
+            raise AssertionError("unexpected query cmd 0x%02X" % cmd_id)
+        if self.a7_error is not None:
+            raise self.a7_error
+        resp = bytearray(32)
+        resp[0] = protocol.REPORT_CMD
+        resp[1] = protocol.RESP_ACK
+        resp[protocol.MATCH_RESULT_OFFSET] = self.a7
+        return bytes(resp)
+
+
 class BuildBaselineTest(unittest.TestCase):
     def test_reads_43_blocks_covering_bank0(self):
         dev = FakeDev()
@@ -596,6 +622,207 @@ class PairDiscoverMainTest(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 probe.main()
+
+    def test_main_pair_discover_zero_window_refused(self):
+        class TtyStdin:
+            def isatty(self):
+                return True
+
+        with mock.patch.object(sys, "stdin", TtyStdin()), \
+                mock.patch.object(probe, "_confirm_prompt", return_value="yes"), \
+                mock.patch.dict(
+                    os.environ, {"PROBE_PAIR_WINDOW": "0"}, clear=False
+                ), mock.patch.object(
+                    sys,
+                    "argv",
+                    ["probe", "--pair-discover", "--start-match",
+                     "--i-understand-risks"],
+                ), mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.main()
+        self.assertEqual(rc, 2)
+        self.assertIn("must be positive", err.getvalue())
+
+
+class PairRunMainTest(unittest.TestCase):
+    class TtyStdin:
+        def isatty(self):
+            return True
+
+    def test_run_sends_frames_and_prints_result_history(self):
+        dev = RunFakeDev(a7=0)
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out:
+            rc = probe.pair_run_main(window=0.01, rf_bytes=b"\x01\x02\x03\x04")
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            dev.sent,
+            [
+                (protocol.PAIR_START_MATCH, (protocol.PAIR_MATCH_SUB,),
+                 protocol.PREFIX_WIRELESS),
+                (protocol.PAIR_WRITE_RF,
+                 (protocol.PAIR_WRITE_RF_SUB, 1, 2, 3, 4),
+                 protocol.PREFIX_WIRELESS),
+            ],
+        )
+        text = out.getvalue()
+        self.assertIn("start_match sent", text)
+        self.assertIn("write_rf sent", text)
+        self.assertIn("reply byte 0", text)
+        self.assertIn("failed bytes observed", text)
+
+    def test_run_flags_b1_report(self):
+        dev = RunFakeDev(a7=0, report=bytes([0x07, 0xB1, 0x01]))
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out:
+            rc = probe.pair_run_main(window=0.01, rf_bytes=b"\x01\x02\x03\x04")
+        self.assertEqual(rc, 0)
+        text = out.getvalue()
+        self.assertIn("0xB1 PAIRING SUCCESS", text)
+        self.assertIn("SUCCESS signal observed", text)
+
+    def test_run_no_receiver_returns_1(self):
+        class OpenFails:
+            def open(self, prefix=None):
+                raise DeviceNotFound("not found")
+
+            def close(self):
+                pass
+
+        with mock.patch.object(probe, "RapooDevice", return_value=OpenFails()), \
+                mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.pair_run_main(window=0.01)
+        self.assertEqual(rc, 1)
+        self.assertIn("receiver", err.getvalue())
+        self.assertIn("not found", err.getvalue())
+
+    def test_run_open_other_error_returns_1(self):
+        class OpenErrors:
+            def open(self, prefix=None):
+                raise OSError("boom")
+
+            def close(self):
+                pass
+
+        with mock.patch.object(probe, "RapooDevice", return_value=OpenErrors()), \
+                mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.pair_run_main(window=0.01)
+        self.assertEqual(rc, 1)
+        self.assertTrue(err.getvalue().strip())
+
+    def test_run_listen_oserror_returns_1(self):
+        dev = RunFakeDev(a7=0)
+
+        def boom(timeout=0.5):
+            raise OSError("unplugged")
+
+        dev.read_report = boom
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.pair_run_main(window=0.01)
+        self.assertEqual(rc, 1)
+        self.assertIn("listen read failed", err.getvalue())
+
+    def test_run_prints_a7_no_response_and_none_history(self):
+        dev = RunFakeDev(a7=0, a7_error=CommandTimeout("asleep"))
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out, \
+                mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.pair_run_main(window=0.01)
+        self.assertEqual(rc, 1, "an all-None run is inconclusive, not success")
+        self.assertIn("no response", out.getvalue())
+        self.assertIn("history: [None]", out.getvalue())
+        self.assertIn("inconclusive", err.getvalue())
+
+    def test_run_nonzero_without_b1_is_success(self):
+        dev = RunFakeDev(a7=0x03)
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out:
+            rc = probe.pair_run_main(window=0.01)
+        self.assertEqual(rc, 0)
+        self.assertIn("non-zero 0xA7 bytes observed", out.getvalue())
+
+    def test_main_pair_run_zero_window_refused(self):
+        with mock.patch.object(sys, "stdin", self.TtyStdin()), \
+                mock.patch.object(probe, "_confirm_prompt", return_value="yes"), \
+                mock.patch.dict(
+                    os.environ, {"PROBE_PAIR_WINDOW": "0"}, clear=False
+                ), mock.patch.object(
+                    sys, "argv", ["probe", "--pair-run", "--i-understand-risks"]
+                ), mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.main()
+        self.assertEqual(rc, 2)
+        self.assertIn("must be positive", err.getvalue())
+
+    def test_main_pair_run_refuses_without_risks(self):
+        with mock.patch.object(probe, "RapooDevice") as mdev, \
+                mock.patch.object(sys, "argv", ["probe", "--pair-run"]), \
+                mock.patch("sys.stderr", new=io.StringIO()):
+            rc = probe.main()
+        self.assertEqual(rc, 2)
+        mdev.assert_not_called()
+
+    def test_main_pair_run_confirmed_runs(self):
+        dev = RunFakeDev(a7=0)
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch.object(sys, "stdin", self.TtyStdin()), \
+                mock.patch.object(probe, "_confirm_prompt", return_value="yes"), \
+                mock.patch.dict(
+                    os.environ, {"PROBE_PAIR_WINDOW": "0.01"}, clear=False
+                ), mock.patch.object(
+                    sys, "argv", ["probe", "--pair-run", "--i-understand-risks"]
+                ), mock.patch("sys.stdout", new=io.StringIO()) as out:
+            rc = probe.main()
+        self.assertEqual(rc, 0)
+        self.assertEqual(dev.sent[0][0], protocol.PAIR_START_MATCH)
+        self.assertEqual(dev.sent[1][0], protocol.PAIR_WRITE_RF)
+        self.assertIn("start_match sent", out.getvalue())
+
+    def test_main_pair_run_write_rf_override(self):
+        dev = RunFakeDev(a7=0)
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch.object(sys, "stdin", self.TtyStdin()), \
+                mock.patch.object(probe, "_confirm_prompt", return_value="yes"), \
+                mock.patch.dict(
+                    os.environ, {"PROBE_PAIR_WINDOW": "0.01"}, clear=False
+                ), mock.patch.object(
+                    sys,
+                    "argv",
+                    ["probe", "--pair-run", "--write-rf", "01020304",
+                     "--i-understand-risks"],
+                ), mock.patch("sys.stdout", new=io.StringIO()):
+            rc = probe.main()
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            dev.sent[1][1],
+            (protocol.PAIR_WRITE_RF_SUB, 1, 2, 3, 4),
+        )
+
+    def test_main_pair_run_bad_window_refuses(self):
+        with mock.patch.object(sys, "stdin", self.TtyStdin()), \
+                mock.patch.object(probe, "_confirm_prompt", return_value="yes"), \
+                mock.patch.dict(
+                    os.environ, {"PROBE_PAIR_WINDOW": "xyz"}, clear=False
+                ), mock.patch.object(
+                    sys, "argv", ["probe", "--pair-run", "--i-understand-risks"]
+                ), mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.main()
+        self.assertEqual(rc, 2)
+        self.assertIn("PROBE_PAIR_WINDOW", err.getvalue())
+
+    def test_main_pair_run_and_discover_mutually_exclusive(self):
+        with mock.patch.object(
+            sys, "argv", ["probe", "--pair-run", "--pair-discover"]
+        ):
+            with self.assertRaises(SystemExit):
+                probe.main()
+
+    def test_main_pair_run_modifier_requires_pair_run_or_discover(self):
+        with mock.patch.object(
+            sys, "argv", ["probe", "--start-match"]
+        ), mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.main()
+        self.assertEqual(rc, 2)
+        self.assertIn("only apply", err.getvalue())
 
 
 if __name__ == "__main__":
