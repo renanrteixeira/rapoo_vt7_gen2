@@ -1,9 +1,13 @@
+import io
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
 
+import probe
 from src.rapoo_vt7 import i18n, main, parameters, protocol, system
 from src.rapoo_vt7.device import CommandTimeout
 from src.rapoo_vt7.pairing_session import (
@@ -55,6 +59,12 @@ class FakeDev:
         self.factory = dict(factory or {})
         self.queries = []
         self.writes = []
+
+    def open(self):
+        pass
+
+    def close(self):
+        pass
 
     def read_eeprom(self, addr, length=1):
         base = (addr[1] << 8) | addr[0]
@@ -332,6 +342,144 @@ class FactoryResetTest(unittest.TestCase):
         dev = BoomDev(data=user_state(), factory=factory_state())
         with self.assertRaises(system.FactoryResetVerifyError):
             system.factory_reset(dev, attempts=2, delay=0)
+
+
+# --- probe --factory-reset gate + main (D3) -------------------------------
+
+
+class ProbeFactoryResetGateTest(unittest.TestCase):
+    class NonTtyStdin:
+        def isatty(self):
+            return False
+
+    class TtyStdin:
+        def isatty(self):
+            return True
+
+    class Args:
+        def __init__(self, risks=False):
+            self.i_understand_risks = risks
+
+    def test_refused_without_risks_flag(self):
+        with self.assertRaises(ValueError) as ctx:
+            probe.factory_reset_gate(self.Args(), stdin=self.NonTtyStdin())
+        self.assertIn("--i-understand-risks", str(ctx.exception))
+
+    def test_non_tty_auto_refuses_even_with_risks_flag(self):
+        with self.assertRaises(ValueError) as ctx:
+            probe.factory_reset_gate(
+                self.Args(risks=True), stdin=self.NonTtyStdin()
+            )
+        self.assertIn("TTY", str(ctx.exception))
+
+    def test_tty_wrong_answer_refuses(self):
+        with self.assertRaises(ValueError) as ctx:
+            probe.factory_reset_gate(
+                self.Args(risks=True),
+                stdin=self.TtyStdin(),
+                prompt=lambda m: "no",
+            )
+        self.assertIn("confirmation", str(ctx.exception))
+
+    def test_tty_eof_refuses_cleanly(self):
+        def eof(m):
+            raise EOFError()
+
+        with self.assertRaises(ValueError) as ctx:
+            probe.factory_reset_gate(
+                self.Args(risks=True), stdin=self.TtyStdin(), prompt=eof
+            )
+        self.assertIn("EOF", str(ctx.exception))
+
+    def test_tty_confirmation_allows(self):
+        self.assertTrue(
+            probe.factory_reset_gate(
+                self.Args(risks=True),
+                stdin=self.TtyStdin(),
+                prompt=lambda m: "yes",
+            )
+        )
+
+
+class ProbeFactoryResetMainTest(unittest.TestCase):
+    def test_happy_path_prints_ack_and_state(self):
+        dev = FakeDev(data=user_state(), factory=factory_state())
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stdout", new=io.StringIO()) as out:
+            rc = probe.factory_reset_main(attempts=3)
+        self.assertEqual(rc, 0)
+        self.assertIn("ACKED", out.getvalue())
+        self.assertIn("AFTER", out.getvalue())
+        self.assertEqual(dev.queries, [protocol.RETURN_FACTORY_SETTINGS])
+
+    def test_ack_error_prints_error_and_exits_nonzero(self):
+        dev = NoAckDev(data=user_state(), factory=factory_state())
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.factory_reset_main(attempts=3)
+        self.assertEqual(rc, 1)
+        self.assertIn("factory reset failed", err.getvalue())
+
+    def test_command_timeout_prints_asleep_and_exits_nonzero(self):
+        dev = TimeoutDev(data=user_state(), factory=factory_state())
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.factory_reset_main(attempts=3)
+        self.assertEqual(rc, 1)
+        self.assertIn("no response", err.getvalue())
+
+    def test_open_error_prints_probe_error_and_exits_nonzero(self):
+        def raise_notfound():
+            raise Exception("not found")
+
+        with mock.patch.object(probe, "RapooDevice") as mdev, \
+                mock.patch("sys.stdout", new=io.StringIO()) as out:
+            mdev.return_value.open.side_effect = raise_notfound
+            rc = probe.factory_reset_main()
+        self.assertEqual(rc, 1)
+        self.assertIn("not found", out.getvalue())
+
+    def test_main_dispatch_non_tty_auto_refuses(self):
+        with mock.patch.object(probe, "RapooDevice") as mdev, \
+                mock.patch.object(
+                    sys,
+                    "stdin",
+                    ProbeFactoryResetGateTest.NonTtyStdin(),
+                ), mock.patch.object(
+                    sys,
+                    "argv",
+                    ["probe", "--factory-reset", "--i-understand-risks"],
+                ), mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.main()
+        self.assertEqual(rc, 2)
+        self.assertIn("REFUSED", err.getvalue())
+        mdev.assert_not_called()
+
+    def test_main_dispatch_confirmed_runs(self):
+        dev = FakeDev(data=user_state(), factory=factory_state())
+        with mock.patch.object(probe, "RapooDevice", return_value=dev), \
+                mock.patch.object(
+                    sys,
+                    "stdin",
+                    ProbeFactoryResetGateTest.TtyStdin(),
+                ), mock.patch.object(
+                    probe, "_confirm_prompt", return_value="yes"
+                ), mock.patch.object(
+                    sys,
+                    "argv",
+                    ["probe", "--factory-reset", "--i-understand-risks"],
+                ), mock.patch("sys.stdout", new=io.StringIO()) as out:
+            rc = probe.main()
+        self.assertEqual(rc, 0)
+        self.assertIn("ACKED", out.getvalue())
+
+    def test_main_dispatch_requires_factory_reset(self):
+        with mock.patch.object(
+            sys, "argv", ["probe", "--i-understand-risks"]
+        ), mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = probe.main()
+        self.assertEqual(rc, 2)
+        self.assertIn("only apply with", err.getvalue())
 
 
 # --- device-name module tests --------------------------------------------

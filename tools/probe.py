@@ -8,7 +8,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.rapoo_vt7 import buttons as button_mod
-from src.rapoo_vt7 import i18n, pairing, parameters, protocol, settings
+from src.rapoo_vt7 import i18n, pairing, parameters, protocol, settings, system
 from src.rapoo_vt7.device import DeviceNotFound, RapooDevice, CommandTimeout
 
 
@@ -799,6 +799,82 @@ def pair_run_main(window=60.0, rf_bytes=None):
         dev.close()
 
 
+def factory_reset_gate(args, stdin=None, prompt=None):
+    """Ask First gate for the destructive 0xAD factory reset (D3).
+
+    Returns `True` after the confirmation passes. Raises `ValueError` with
+    the refusal reason when `--i-understand-risks` is missing, stdin is not a
+    TTY (auto-refuse — no prompt, no hang), or the human does not type the
+    confirmation word.
+    """
+    if stdin is None:
+        stdin = sys.stdin
+    if prompt is None:
+        prompt = _confirm_prompt
+    if not args.i_understand_risks:
+        raise ValueError(
+            "destructive factory reset (0xAD) requires --i-understand-risks "
+            "(Ask First)"
+        )
+    if not stdin.isatty():
+        raise ValueError(
+            "destructive factory reset needs a TTY for confirmation; "
+            "stdin is not a TTY — refused (no prompt)"
+        )
+    try:
+        answer = prompt(
+            "This resets the mouse to the factory defaults (0xAD "
+            "return_factory_settings): DPI list, sensor modes, RF strategy, "
+            "button remaps and the device name are all wiped. Type 'yes' to "
+            "continue: "
+        )
+    except EOFError:
+        raise ValueError("confirmation not given (EOF)")
+    if answer.strip().lower() != "yes":
+        raise ValueError("confirmation not given")
+    return True
+
+
+def factory_reset_main(attempts=None):
+    """Opens the device, runs `system.factory_reset` (0xAD + post-reset
+    verification against the factory-default markers) and prints the
+    before/after verify state. DESTRUCTIVE — Ask First gated in `main` via
+    `factory_reset_gate`. Exits non-zero when the device does not answer or
+    the post-reset state does not confirm the reset.
+    """
+    dev = RapooDevice()
+    try:
+        dev.open()
+    except Exception as exc:
+        print(i18n.tr("probe_error_open", error=exc))
+        return 1
+    try:
+        result = system.factory_reset(
+            dev,
+            attempts=attempts if attempts is not None else system.RESET_READ_ATTEMPTS,
+        )
+    except CommandTimeout as exc:
+        print(
+            "ERROR: factory reset aborted - no response (mouse asleep?): "
+            "{}".format(exc),
+            file=sys.stderr,
+        )
+        return 1
+    except (system.FactoryResetAckError, system.FactoryResetVerifyError) as exc:
+        print("ERROR: factory reset failed: {}".format(exc), file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print("ERROR: factory reset aborted: {}".format(exc), file=sys.stderr)
+        return 1
+    finally:
+        dev.close()
+    print("ACKED: the device confirmed the 0xAD reset")
+    print("BEFORE: {}".format(result["before"]))
+    print("AFTER:  {}".format(result["after"]))
+    print("OK - the device returned to the factory defaults")
+    return 0
+
+
 def dump_main():
     dev = RapooDevice()
     try:
@@ -870,6 +946,15 @@ def main():
         "PROBE_PAIR_WINDOW seconds), printing the result-byte history; "
         "DESTRUCTIVE — requires --i-understand-risks and a TTY confirmation",
     )
+    group.add_argument(
+        "--factory-reset",
+        action="store_true",
+        help="send the 0xAD return_factory_settings command and verify the "
+        "device returned to the factory defaults (reads the DPI-current, RF "
+        "byte and sensor-mode markers before/after, retrying while the mouse "
+        "reboots); DESTRUCTIVE — requires --i-understand-risks and a TTY "
+        "confirmation",
+    )
     parser.add_argument(
         "--pair-result",
         action="store_true",
@@ -892,11 +977,12 @@ def main():
     parser.add_argument(
         "--i-understand-risks",
         action="store_true",
-        help="acknowledge the destructive receiver-pairing commands (Ask First)",
+        help="acknowledge the destructive commands (receiver-pairing 0xA0/0xA1, "
+        "factory reset 0xAD — Ask First)",
     )
     args = parser.parse_args()
 
-    if not (args.pair_discover or args.pair_run) and (
+    if not (args.pair_discover or args.pair_run or args.factory_reset) and (
         args.pair_result
         or args.start_match
         or args.write_rf
@@ -904,7 +990,7 @@ def main():
     ):
         print(
             "ERROR: --pair-result/--start-match/--write-rf/--i-understand-risks "
-            "only apply with --pair-discover/--pair-run",
+            "only apply with --pair-discover/--pair-run/--factory-reset",
             file=sys.stderr,
         )
         return 2
@@ -913,6 +999,13 @@ def main():
         return dump_main()
     if args.status:
         return status_main()
+    if args.factory_reset:
+        try:
+            factory_reset_gate(args)
+        except ValueError as exc:
+            print("REFUSED: {}".format(exc), file=sys.stderr)
+            return 2
+        return factory_reset_main()
     if args.pair_run:
         # The full flow always fires 0xA0 + 0xA1: reuse the Ask First gate.
         args.start_match = True
