@@ -445,14 +445,14 @@ class PairGateTest(unittest.TestCase):
         self.assertEqual(destructive, ["start_match", "write_rf"])
         self.assertEqual(rf, b"\x01\x02\x03\x04")
 
-    def test_write_rf_alone_allowed_plan(self):
-        destructive, rf = probe._pair_destructive(
-            self.Args(write="01020304", risks=True),
-            stdin=self.TtyStdin(),
-            prompt=lambda m: "yes",
-        )
-        self.assertEqual(destructive, ["write_rf"])
-        self.assertEqual(rf, b"\x01\x02\x03\x04")
+    def test_write_rf_without_start_match_refused(self):
+        with self.assertRaises(ValueError) as ctx:
+            probe._pair_destructive(
+                self.Args(write="01020304", risks=True),
+                stdin=self.TtyStdin(),
+                prompt=lambda m: "yes",
+            )
+        self.assertIn("--start-match", str(ctx.exception))
 
     def test_tty_eof_refuses_cleanly(self):
         def eof(m):
@@ -469,14 +469,16 @@ class PairGateTest(unittest.TestCase):
     def test_write_rf_invalid_hex_refused(self):
         with self.assertRaises(ValueError) as ctx:
             probe._pair_destructive(
-                self.Args(write="zz", risks=True), stdin=self.TtyStdin()
+                self.Args(start=True, write="zz", risks=True),
+                stdin=self.TtyStdin(),
             )
         self.assertIn("hex", str(ctx.exception))
 
     def test_write_rf_wrong_length_refused(self):
         with self.assertRaises(ValueError) as ctx:
             probe._pair_destructive(
-                self.Args(write="010203", risks=True), stdin=self.TtyStdin()
+                self.Args(start=True, write="010203", risks=True),
+                stdin=self.TtyStdin(),
             )
         self.assertIn("4 bytes", str(ctx.exception))
 

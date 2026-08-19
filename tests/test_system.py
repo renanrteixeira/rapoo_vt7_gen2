@@ -160,9 +160,13 @@ class BoomDev(FakeDev):
 class FakeMonitor:
     def __init__(self):
         self.jobs = []
+        self.quiet = False
 
     def submit(self, fn, on_done=None, on_error=None, wake=False):
         self.jobs.append((fn, on_done, on_error, wake))
+
+    def set_quiet(self, quiet):
+        self.quiet = bool(quiet)
 
 
 class _sync_idle:
@@ -1467,13 +1471,16 @@ class PairingWindowBehaviorTest(unittest.TestCase):
         self.assertEqual(window._pair_last_message, "boom")
         self.assertEqual(window._pair_current_step, 1)
 
-    def test_update_terminal_without_message_keeps_previous(self):
+    def test_terminal_without_message_clears_stale(self):
+        # F7: a terminal result without a message must clear any stale error
+        # text from a previous run, or a language change would re-render the
+        # old error instead of the correct status key.
         from src.rapoo_vt7 import gui
 
         window = self._window()
         window._pair_last_message = "stale"
         window.update_pairing_state(0, gui.STATUS_SUCCESS, None)
-        self.assertEqual(window._pair_last_message, "stale")
+        self.assertIsNone(window._pair_last_message)
 
     def test_update_non_terminal_records_step(self):
         from src.rapoo_vt7 import gui

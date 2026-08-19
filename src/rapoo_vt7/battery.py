@@ -43,6 +43,7 @@ class BatteryMonitor:
         self._tasks = queue.Queue()
         self._thread = None
         self._asleep = False
+        self._quiet = False
         self._mode = None
         self._rpt_24g = None
         self._rpt_usb = None
@@ -58,6 +59,20 @@ class BatteryMonitor:
 
     def request_refresh(self):
         self._refresh.set()
+
+    def set_quiet(self, quiet):
+        """Suppresses ALL device queries while a pairing session runs on its
+        own receiver fd (story 5-4).
+
+        The monitor must not send commands during the session: its 0xAA ACK
+        could be misread by the session's 0xA7 poll as a match result (and the
+        session's ACK misread by the monitor). In quiet mode the monitor keeps
+        listening to passive reports (the tray stays live) but never queries,
+        never runs tasks (they are deferred to the end of the session) and
+        never sends the fallback 0xAA. The session owns the exclusive command
+        channel for its duration.
+        """
+        self._quiet = bool(quiet)
 
     def submit(self, fn, on_done=None, on_error=None, wake=False):
         """Runs `fn(dev)` on the monitor thread with exclusive device access
@@ -108,8 +123,9 @@ class BatteryMonitor:
 
     def _poll(self, dev):
         last_report = time.monotonic()
-        # First read: 1 query only if we are not already asleep.
-        if not self._asleep:
+        # First read: 1 query only if we are not already asleep (and not in
+        # quiet mode — a pairing session owns the command channel).
+        if not self._asleep and not self._quiet:
             try:
                 self._query_battery(dev)
             except CommandTimeout:
@@ -123,7 +139,14 @@ class BatteryMonitor:
             if not self._tasks.empty():
                 self._refresh.clear()
                 fn, on_done, on_error, wake = self._tasks.get_nowait()
-                if self._asleep and not wake:
+                if self._quiet:
+                    # Defer every task until the pairing session ends — the
+                    # monitor must not write while the session's commands are
+                    # in flight (its ACK could be misread as a 0xA7 result).
+                    # Re-queue and fall through to the report listen (no hot
+                    # spin, the tray keeps parsing report 7 during the run).
+                    self._tasks.put((fn, on_done, on_error, wake))
+                elif self._asleep and not wake:
                     if on_error:
                         on_error(CommandTimeout(i18n.tr("mouse_asleep")))
                 else:
@@ -135,7 +158,7 @@ class BatteryMonitor:
                         self._state("asleep")
                 continue
             # Manual refresh (user requested) -> explicit query.
-            if self._refresh.is_set():
+            if self._refresh.is_set() and not self._quiet:
                 self._refresh.clear()
                 self._asleep = False
                 last_report = time.monotonic()
@@ -155,7 +178,7 @@ class BatteryMonitor:
 
             # No report for a long time AND mouse not asleep: 1 query to
             # revalidate (it may be awake but silent).
-            if not self._asleep and time.monotonic() - last_report >= self._fallback:
+            if not self._asleep and not self._quiet and time.monotonic() - last_report >= self._fallback:
                 last_report = time.monotonic()
                 try:
                     self._query_battery(dev)
@@ -243,6 +266,11 @@ class BatteryMonitor:
         # = mode (0 2.4G, 1 BT, 2 USB), data[2]=gear, data[3..4]=dpiX LE,
         # data[5..6]=dpiY LE, data[7]=status, data[8]=battery%.
         if len(data) <= 8 or data[0] != REPORT_PASSIVE:
+            return
+        if data[1] in (protocol.PAIR_REPORT_PREFIX, protocol.PAIR_SUCCESS_REPORT):
+            # Receiver pairing sub-command report (0xB0/0xB1), NOT a battery
+            # report — parsing it would flip the tray to Bluetooth mode and
+            # show a bogus battery from the pairing bytes.
             return
         self._mode = data[1] & 0x0F
         self._rpt_24g = data[10]

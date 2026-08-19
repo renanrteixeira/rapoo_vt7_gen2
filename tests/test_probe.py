@@ -722,16 +722,18 @@ class PairRunMainTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("listen read failed", err.getvalue())
 
-    def test_run_prints_a7_no_response_and_none_history(self):
+    def test_run_refuses_when_receiver_never_answers_gate(self):
+        # F9: the readiness gate refuses BEFORE any destructive frame when the
+        # receiver never answers the 0xA7 probe.
         dev = RunFakeDev(a7=0, a7_error=CommandTimeout("asleep"))
         with mock.patch.object(probe, "RapooDevice", return_value=dev), \
                 mock.patch("sys.stdout", new=io.StringIO()) as out, \
                 mock.patch("sys.stderr", new=io.StringIO()) as err:
             rc = probe.pair_run_main(window=0.01)
-        self.assertEqual(rc, 1, "an all-None run is inconclusive, not success")
-        self.assertIn("no response", out.getvalue())
-        self.assertIn("history: [None]", out.getvalue())
-        self.assertIn("inconclusive", err.getvalue())
+        self.assertEqual(rc, 1, "an unresponsive receiver must refuse the run")
+        self.assertIn("no response (attempt 1/3)", err.getvalue())
+        self.assertIn("REFUSED", err.getvalue())
+        self.assertEqual(dev.sent, [], "no destructive frame may be sent")
 
     def test_run_nonzero_without_b1_is_success(self):
         dev = RunFakeDev(a7=0x03)

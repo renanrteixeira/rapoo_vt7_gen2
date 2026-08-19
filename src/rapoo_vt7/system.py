@@ -200,9 +200,14 @@ def encode_name(name):
     on readback) -> NUL-pad to exactly 16. Returns bytes. Raises
     `DeviceNameError` subclasses before any device I/O: `NameEmptyError` on
     blank input, `NameTooLongError` when the UTF-8 encoding is longer than 16
-    bytes, and `DeviceNameError` itself on an embedded NUL byte.
+    bytes, and `DeviceNameError` itself on an embedded NUL byte or an
+    un-encodable input (a lone surrogate from pasted clipboard text would
+    otherwise escape as `UnicodeEncodeError` and crash the GTK handler — F6).
     """
-    raw = str(name).strip().encode("utf-8")
+    try:
+        raw = str(name).strip().encode("utf-8")
+    except UnicodeEncodeError:
+        raise DeviceNameError("device name cannot be encoded as UTF-8") from None
     if not raw:
         raise NameEmptyError("device name is empty")
     if b"\x00" in raw:

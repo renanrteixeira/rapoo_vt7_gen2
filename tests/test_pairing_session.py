@@ -95,7 +95,7 @@ class FakeDev:
             raise self.report_error
         return self.report
 
-    def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
+    def query(self, cmd_id, args=(), timeout=1.0, prefix=None, capture_report7=()):
         if self.query_error is not None:
             raise self.query_error
         if self.gate is not None:
@@ -148,7 +148,7 @@ class PairingSessionTest(unittest.TestCase):
         dev = FakeDev(a7=0)
         with mock.patch.object(pairing.os, "urandom",
                                return_value=b"\xAA\xBB\xCC\xDD"):
-            result, _s = run(dev)
+            result, _s = run(dev, window=0.1, poll=0.01)
         self._wait(result)
         self.assertEqual(
             dev.sent,
@@ -160,13 +160,16 @@ class PairingSessionTest(unittest.TestCase):
                  protocol.PREFIX_WIRELESS),
             ],
         )
-        self.assertEqual(result.status, STATUS_FAILED)
+        self.assertEqual(result.status, STATUS_TIMEOUT)
 
-    def test_failed_when_a7_zero(self):
-        dev = FakeDev(a7=0)
-        result, _s = run(dev)
+    def test_all_zeros_waits_out_window_as_timeout(self):
+        # Zeros alone ("no match in progress yet" — the user is still doing
+        # the physical steps) never fail the run: without a prior non-zero
+        # result byte they just wait out the window (F1).
+        dev = FakeDev(a7_seq=[0x00, 0x00, 0x00])
+        result, _s = run(dev, window=0.1, poll=0.01)
         self._wait(result)
-        self.assertEqual(result.status, STATUS_FAILED)
+        self.assertEqual(result.status, STATUS_TIMEOUT)
 
     def test_success_on_b1_report(self):
         dev = FakeDev(a7=0, report=bytes([0x07, 0xB1, 0x01]))
@@ -198,10 +201,13 @@ class PairingSessionTest(unittest.TestCase):
                 super().__init__(a7=0, connected_error=CommandTimeout("asleep"))
                 self.calls = 0
 
-            def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
+            def query(self, cmd_id, args=(), timeout=1.0, prefix=None,
+                      capture_report7=()):
                 self.calls += 1
                 if self.calls == 1:
-                    return super().query(cmd_id, args, timeout, prefix)
+                    return super().query(
+                        cmd_id, args, timeout, prefix, capture_report7
+                    )
                 raise CommandTimeout("asleep")
 
         dev = GateThenTimeoutDev()
@@ -233,13 +239,13 @@ class PairingSessionTest(unittest.TestCase):
 
     def test_steps_emitted_in_order(self):
         dev = FakeDev(a7=0)
-        result, _s = run(dev)
+        result, _s = run(dev, window=0.1, poll=0.01)
         self._wait(result)
         self.assertEqual(result.steps, [0, 1, 2])
 
     def test_receiver_closed_after_run(self):
         dev = FakeDev(a7=0)
-        result, _s = run(dev)
+        result, _s = run(dev, window=0.1, poll=0.01)
         self._wait(result)
         self.assertTrue(dev.closed)
         self.assertTrue(dev.opened)
@@ -270,7 +276,8 @@ class PairingSessionTest(unittest.TestCase):
         # poll is useless as a success signal, so the run must time out (no
         # 0xB1, 0xA7 replies are non-ACK -> None).
         class NonAckDev(FakeDev):
-            def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
+            def query(self, cmd_id, args=(), timeout=1.0, prefix=None,
+                      capture_report7=()):
                 resp = bytearray(32)
                 resp[0] = protocol.REPORT_CMD
                 resp[1] = protocol.RESP_EMPTY
@@ -291,7 +298,9 @@ class PairingSessionTest(unittest.TestCase):
         self.assertEqual(result.status, STATUS_SUCCESS)
 
     def test_two_consecutive_zeros_is_failed(self):
-        dev = FakeDev(a7_seq=[0x05, 0, 0, 0])
+        # A real match result (non-zero) was observed first; two consecutive
+        # zeros right after it confirm the failure (F1).
+        dev = FakeDev(a7_seq=[0x05, 0x03, 0, 0])
         result, _s = run(dev)
         self._wait(result)
         self.assertEqual(result.status, STATUS_FAILED)
@@ -304,13 +313,25 @@ class PairingSessionTest(unittest.TestCase):
 
     def test_cancel_stops_matching_and_writes_nothing_more(self):
         class GatedDev(FakeDev):
-            def __init__(self, entered):
-                super().__init__(a7=0x01, gate=threading.Event())
-                self.entered = entered
+            """Answers the readiness gate (first query) immediately, then
+            blocks every matching-loop query until released so the test can
+            cancel AFTER the destructive frames were already sent."""
 
-            def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
-                self.entered.set()
-                return super().query(cmd_id, args, timeout, prefix)
+            def __init__(self, entered):
+                super().__init__(a7=0x01)
+                self.entered = entered
+                self.block = threading.Event()
+                self.calls = 0
+
+            def query(self, cmd_id, args=(), timeout=1.0, prefix=None,
+                      capture_report7=()):
+                self.calls += 1
+                if self.calls > 1:
+                    self.entered.set()
+                    self.block.wait()
+                return super().query(
+                    cmd_id, args, timeout, prefix, capture_report7
+                )
 
         entered = threading.Event()
         dev = GatedDev(entered)
@@ -321,7 +342,7 @@ class PairingSessionTest(unittest.TestCase):
         # Wait until the loop is blocked inside the 0xA7 query, then cancel.
         self.assertTrue(entered.wait(5.0), "session never reached the query")
         session.cancel()
-        dev.gate.set()
+        dev.block.set()
         self.assertTrue(result.done.wait(5.0), "cancel never produced a result")
         self.assertEqual(result.status, STATUS_CANCELLED)
         self.assertEqual(
@@ -329,6 +350,32 @@ class PairingSessionTest(unittest.TestCase):
             [protocol.PAIR_START_MATCH, protocol.PAIR_WRITE_RF],
             "no further pairing command may be written after cancel",
         )
+
+    def test_cancel_during_readiness_gate_sends_nothing(self):
+        # A Stop while the readiness gate is blocked must abort cleanly BEFORE
+        # the destructive frames are written (F4).
+        class GateBlockedDev(FakeDev):
+            def query(self, cmd_id, args=(), timeout=1.0, prefix=None,
+                      capture_report7=()):
+                self.entered.set()
+                self.gate.wait()
+                return super().query(
+                    cmd_id, args, timeout, prefix, capture_report7
+                )
+
+        entered = threading.Event()
+        dev = GateBlockedDev(a7=0x01, gate=threading.Event())
+        dev.entered = entered
+        result = Result()
+        session = PairingSession(factory=lambda: dev, on_step=result.on_step,
+                                 on_result=result.on_result, window=10.0)
+        session.start()
+        self.assertTrue(entered.wait(5.0), "session never reached the gate")
+        session.cancel()
+        dev.gate.set()
+        self.assertTrue(result.done.wait(5.0), "cancel never produced a result")
+        self.assertEqual(result.status, STATUS_CANCELLED)
+        self.assertEqual(dev.sent, [], "no frame may be sent after a gate stop")
 
     def test_start_refuses_when_already_running(self):
         gate = threading.Event()
@@ -341,6 +388,62 @@ class PairingSessionTest(unittest.TestCase):
         session.cancel()
         session._thread.join(timeout=5.0)
         self.assertFalse(session.is_running)
+
+    def test_poll_b1_report_captured_is_success(self):
+        # The 0xA7 poll must CAPTURE the report-7 0xB1 success signal instead of
+        # discarding it while waiting for the ACK (F8).
+        class B1PollDev(FakeDev):
+            def query(self, cmd_id, args=(), timeout=1.0, prefix=None,
+                      capture_report7=()):
+                if protocol.PAIR_SUCCESS_REPORT in capture_report7:
+                    return bytes(
+                        [0x07, protocol.PAIR_SUCCESS_REPORT, 0x01]
+                    )
+                return super().query(
+                    cmd_id, args, timeout, prefix, capture_report7
+                )
+
+        dev = B1PollDev(a7=0)
+        result, _s = run(dev, window=0.5, poll=0.01)
+        self._wait(result)
+        self.assertEqual(result.status, STATUS_SUCCESS)
+
+    def test_success_on_vid_pid_transition_from_baseline(self):
+        # A mouse attached only DURING the run (none at baseline) turns the
+        # connected VID/PID poll into the success signal (F11).
+        class TransitionDev(FakeDev):
+            def __init__(self, baseline_read):
+                super().__init__(a7=0)
+                self.baseline_read = baseline_read
+                self.attached = False
+
+            def read_eeprom(self, addr, length=1):
+                if self.attached:
+                    self.connected = {"vid": "24AE", "pid": "4613"}
+                data = super().read_eeprom(addr, length)
+                if not self.attached:
+                    self.baseline_read.set()
+                return data
+
+        baseline_read = threading.Event()
+        dev = TransitionDev(baseline_read)
+        result = Result()
+        session = PairingSession(
+            factory=lambda: dev,
+            on_step=result.on_step,
+            on_result=result.on_result,
+            window=5.0,
+            poll=0.01,
+        )
+        session.start()
+        self.assertTrue(baseline_read.wait(5.0), "baseline read never happened")
+        dev.attached = True
+        self.assertTrue(result.done.wait(5.0), "session never produced a result")
+        self.assertEqual(result.status, STATUS_SUCCESS)
+        self.assertEqual(
+            [c[0] for c in dev.sent],
+            [protocol.PAIR_START_MATCH, protocol.PAIR_WRITE_RF],
+        )
 
 
 class PairingSessionUnitTest(unittest.TestCase):

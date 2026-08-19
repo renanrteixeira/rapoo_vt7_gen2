@@ -16,15 +16,20 @@ the same reports (incl. any 0xB1) without contention. `battery.py` is
 untouched.
 
 Detection: 0xA7 reply `data[2]==0` is the VALIDATED failure signal
-(2026-08-17). Success candidates (pinned by the on-device `--pair-run`
-validation): report-7 `data[1]==0xB1`, then persistent non-zero 0xA7 (two
-consecutive bytes — a single glitchy reply is not trusted), then a non-zero
-connected VID/PID. Until the validation, all three are candidates; the window
-treats them as success and FEATURES.md keeps them marked accordingly.
+(2026-08-17), but while the user is still doing the physical steps (connect
+wired, power-cycle, press L+M+R) an awake receiver replies 0 with no match in
+progress — so a zero is only treated as FAILED after a non-zero result byte was
+observed (a real match result existed) and then two consecutive zeros followed
+it. Success candidates (pinned by the on-device `--pair-run` validation):
+report-7 `data[1]==0xB1`, then persistent non-zero 0xA7 (two consecutive bytes
+— a single glitchy reply is not trusted), then a non-zero connected VID/PID.
+Until the validation, all three are candidates; the window treats them as
+success and FEATURES.md keeps them marked accordingly.
 
 Cancellation is cooperative: `cancel()` sets a stop event checked after every
-blocking operation; it never leaves the receiver mid-write (the destructive
-commands are sent before the loop; inside it only the read-only 0xA7 poll and
+blocking operation — including the readiness gate, so a Stop during the gate
+aborts cleanly BEFORE the destructive frames are sent; it never leaves the
+receiver mid-write (inside the loop only the read-only 0xA7 poll and
 `read_eeprom` run). Errors surface via the typed `PairingSessionError`/
 `ReceiverNotFound` and the `on_result(status, message)` callback.
 """
@@ -43,9 +48,11 @@ STATUS_CANCELLED = "cancelled"
 STATUS_ERROR = "error"
 
 # Consecutive non-zero 0xA7 result bytes that count as a success candidate,
-# and consecutive 0 bytes that count as a confirmed failure. A single reply
-# (0 or non-zero) is not trusted: during the guided flow a live receiver may
-# answer 0 before the user presses L+M+R.
+# and consecutive 0 bytes (after a prior non-zero transient) that count as a
+# confirmed failure. A single reply (0 or non-zero) is not trusted: during the
+# guided flow a live receiver may answer 0 before the user presses L+M+R, and
+# 0 means "no match in progress" (validated) — so zeros alone never fail the
+# run, they just wait out the window (TIMEOUT).
 _PERSISTENT_NONZERO = 2
 _PERSISTENT_ZERO = 2
 
@@ -120,13 +127,20 @@ class PairingSession:
             self._emit(STATUS_ERROR, exc)
             return
         try:
+            if self._stop.is_set():
+                self._emit(STATUS_CANCELLED)
+                return
             frames = pairing.pairing_commands()
             self._step(0)
             # Readiness gate: never fire the destructive start_match/write_rf
             # into a sleeping receiver. Probe 0xA7 up to 3 attempts (~1 s
             # apart); any reply (even data[2]==0) proves the receiver is awake.
+            # A Stop during the gate aborts cleanly, before any write.
             gate = frames["get_result"]
             for attempt in range(_READINESS_ATTEMPTS):
+                if self._stop.is_set():
+                    self._emit(STATUS_CANCELLED)
+                    return
                 try:
                     dev.query(gate[1], gate[2:], timeout=1.0, prefix=gate[0])
                     break
@@ -142,6 +156,9 @@ class PairingSession:
                 except OSError as exc:
                     self._emit(STATUS_ERROR, exc)
                     return
+            if self._stop.is_set():
+                self._emit(STATUS_CANCELLED)
+                return
             try:
                 start = frames["start_match"]
                 dev.send_command(
@@ -190,6 +207,10 @@ class PairingSession:
         deadline = time.monotonic() + self._window
         nonzero_streak = 0
         zero_streak = 0
+        # A genuine non-zero 0xA7 result byte was observed at least once. Until
+        # that happens, zeros mean "no match in progress yet" (the user is still
+        # doing the physical steps) and must not fail the run.
+        seen_result = False
         while not self._stop.is_set() and time.monotonic() < deadline:
             # 1) Report-7 raw listen: 0xB1 = pairing success (bundle).
             try:
@@ -207,15 +228,19 @@ class PairingSession:
                 return
             if self._stop.is_set():
                 break
-            # 2) 0xA7 poll: two consecutive data[2]==0 = failed (validated);
-            #    persistent non-zero = success candidate. Timeout = non-fatal
-            #    (the receiver may be busy / the mouse power-cycled).
+            # 2) 0xA7 poll: consecutive data[2]==0 after a prior non-zero
+            #    transient = failed (validated); persistent non-zero = success
+            #    candidate. Timeout = non-fatal (the receiver may be busy / the
+            #    mouse power-cycled). The poll captures the 0xB1 success report
+            #    instead of discarding it (it must not be swallowed while the
+            #    ACK is awaited).
             try:
                 resp = dev.query(
                     get_result[1],
                     get_result[2:],
                     timeout=1.0,
                     prefix=get_result[0],
+                    capture_report7=(protocol.PAIR_SUCCESS_REPORT,),
                 )
             except CommandTimeout:
                 nonzero_streak = 0
@@ -224,16 +249,25 @@ class PairingSession:
                 self._emit(STATUS_ERROR, exc)
                 return
             else:
+                if (
+                    resp is not None
+                    and resp[0] == protocol.REPORT_PASSIVE
+                    and len(resp) > 1
+                    and resp[1] == protocol.PAIR_SUCCESS_REPORT
+                ):
+                    self._emit(STATUS_SUCCESS)
+                    return
                 result = pairing.match_result_byte(resp)
                 if result == 0:
                     zero_streak += 1
                     nonzero_streak = 0
-                    if zero_streak >= _PERSISTENT_ZERO:
+                    if seen_result and zero_streak >= _PERSISTENT_ZERO:
                         self._emit(STATUS_FAILED)
                         return
                 elif result is not None:
                     zero_streak = 0
                     nonzero_streak += 1
+                    seen_result = True
                     if nonzero_streak >= _PERSISTENT_NONZERO:
                         self._emit(STATUS_SUCCESS)
                         return

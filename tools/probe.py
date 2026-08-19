@@ -487,6 +487,12 @@ def _pair_destructive(args, stdin=None, prompt=None):
     if args.start_match:
         destructive.append("start_match")
     if args.write_rf:
+        if not args.start_match:
+            raise ValueError(
+                "--write-rf requires --start-match: the A Hub always pairs "
+                "them, and a raw 0xA1 RF write without entering pairing mode "
+                "can orphan the currently-paired mouse"
+            )
         try:
             rf_bytes = bytes.fromhex(args.write_rf)
         except ValueError:
@@ -685,9 +691,44 @@ def pair_run_main(window=60.0, rf_bytes=None):
         for i, step in enumerate(pairing.PAIRING_FLOW.values(), 1):
             print("  {}. {}".format(i, step))
         frames = pairing.pairing_commands(rf_bytes=rf_bytes)
+        # Readiness gate (mirrors the GUI session, F9): never fire the
+        # destructive start_match/write_rf into a sleeping receiver. Probe
+        # 0xA7 up to 3 attempts (~1 s apart); any reply proves it is awake.
+        gate = frames["get_result"]
+        awake = False
+        for attempt in range(3):
+            try:
+                dev.query(gate[1], gate[2:], timeout=1.0, prefix=gate[0])
+                awake = True
+                break
+            except CommandTimeout:
+                print(
+                    "  readiness probe (0xA7): no response (attempt {}/3)".format(
+                        attempt + 1
+                    ),
+                    file=sys.stderr,
+                )
+                time.sleep(1.0)
+            except OSError as exc:
+                print("  readiness probe failed: {}".format(exc), file=sys.stderr)
+                return 1
+        if not awake:
+            print(
+                "  REFUSED: receiver not responding — power on the wireless "
+                "mouse / bring it in range, then re-run",
+                file=sys.stderr,
+            )
+            return 1
         for cmd in ("start_match", "write_rf"):
             frame = frames[cmd]
-            dev.send_command(frame[1], frame[2:], prefix=frame[0])
+            try:
+                dev.send_command(frame[1], frame[2:], prefix=frame[0])
+            except OSError as exc:
+                print(
+                    "  send failed ({}) — receiver unplugged?".format(exc),
+                    file=sys.stderr,
+                )
+                return 1
             print("  {} sent: {}".format(cmd, fmt(frame)))
         print(
             "  (0xA0/0xA1 reply only on the feature report, unreadable on "

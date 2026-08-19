@@ -28,8 +28,10 @@ RETURN_FACTORY_SETTINGS = 0xAD  # 173
 
 # Receiver pairing (A Hub `deviceMatcher`, story 5-3; free 0xA0-0xAF slots).
 # Sent to the RECEIVER (prefix 0xA5). 0xA0/0xA1 are DESTRUCTIVE (they alter the
-# receiver's pairing state) — no app write path, probe-only behind an Ask First
-# gate. 0xA7 is read-only but its reply semantics are unvalidated (🔶).
+# receiver's pairing state) — write paths are gated: the guided pairing session
+# (pairing_session.py, story 5-4) sends them behind a blocking confirmation
+# dialog in the app window, and probe.py behind an Ask First gate. 0xA7 is
+# read-only; 0 = failed (validated 2026-08-17), non-zero = success candidate 🔶.
 PAIR_START_MATCH = 0xA0         # enter pairing mode (sub-arg 0x81)
 PAIR_WRITE_RF = 0xA1            # write the 4-byte RF address (sub-arg 0x8F)
 PAIR_GET_RESULT = 0xA7          # read the match result (0 = failed; other 🔶)
@@ -38,6 +40,11 @@ PAIR_WRITE_RF_SUB = 0x8F        # sendWriteRF payload byte (followed by 4 RF byt
 # Report-7 sub-command for a successful pairing (A Hub `VTnrf54LBaseParser`,
 # `s === 177` -> "配对成功"). Hidraw offset = WebHID byte 0 + 1 -> data[1].
 PAIR_SUCCESS_REPORT = 0xB1
+# Report-7 pairing sub-commands start at 0xB0 (0xB0 = start matching / 0xB1 =
+# success). These are NOT battery reports — `battery._handle_report` skips
+# `data[1] in (PAIR_REPORT_PREFIX, PAIR_SUCCESS_REPORT)` so the tray never
+# parses a pairing report as Bluetooth mode + garbage battery.
+PAIR_REPORT_PREFIX = 0xB0
 # The 0xA7 match-result byte is WebHID byte 1 = hidraw data[2] (raw report:
 # data[0] = report id, data[1] = ACK, data[2] = result). 0 = failed (validated
 # 2026-08-17); non-zero = success candidate until story 5-4 validation.

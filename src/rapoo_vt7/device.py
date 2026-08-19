@@ -198,24 +198,39 @@ class RapooDevice:
         """Reads any raw report from the device (e.g. passive rid 7)."""
         return self._read_report(timeout)
 
-    def read_response(self, cmd_id=None, timeout=1.0):
+    def read_response(self, cmd_id=None, timeout=1.0, capture_report7=()):
+        """Reads the command reply (rid-6 ACK) within `timeout`.
+
+        A passive report-7 whose sub-command byte (`data[1]`) is in
+        `capture_report7` is returned instead of being discarded: during a
+        pairing session the 0xA7 poll must not swallow the 0xB1
+        pairing-success report that bursts in while it waits.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             data = self._read_report(deadline - time.monotonic())
             if data is None:
                 return None
+            if (
+                data[0] == protocol.REPORT_PASSIVE
+                and len(data) > 1
+                and data[1] in capture_report7
+            ):
+                return data
             if data[0] == protocol.REPORT_CMD and len(data) > 1:
                 if data[1] == protocol.RESP_ACK:
                     return data
         return None
 
-    def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
+    def query(self, cmd_id, args=(), timeout=1.0, prefix=None, capture_report7=()):
         tried = set()
         while True:
             tried.add(self._active)
             try:
                 self.send_command(cmd_id, args, prefix=prefix)
-                resp = self.read_response(cmd_id, timeout=timeout)
+                resp = self.read_response(
+                    cmd_id, timeout=timeout, capture_report7=capture_report7
+                )
                 if resp is None:
                     raise CommandTimeout(i18n.tr("no_response"))
                 return resp

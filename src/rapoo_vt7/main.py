@@ -618,10 +618,13 @@ class RapooApp(Gtk.Application):
         """Start button confirmed: launches the pairing session on its own
         daemon thread. The session opens its OWN receiver fd (prefix 0xA5),
         so the monitor is never touched; callbacks hop to the GTK thread via
-        idle_add. The window already holds the busy guard."""
+        idle_add. The window already holds the busy guard. The monitor is put
+        in quiet mode for the session duration (F3): it must not send 0xAA
+        whose ACK the session's 0xA7 poll could misread as a match result."""
         if self._pair_session is not None and self._pair_session.is_running:
             return
         self._pair_step = 0
+        self._monitor.set_quiet(True)
         session = PairingSession(
             on_step=self._on_pair_step,
             on_result=self._on_pair_result,
@@ -648,10 +651,12 @@ class RapooApp(Gtk.Application):
 
     def _apply_pair_result(self, status, message):
         """GTK thread. Terminal session result: localizes it, updates the
-        window (releases the busy guard) and shows a notification. Dropped
-        silently while the app is quitting (widgets may be gone)."""
+        window (releases the busy guard), lifts the monitor's quiet mode (F3)
+        and shows a notification. Dropped silently while the app is quitting
+        (widgets may be gone)."""
         if self._quitting:
             return
+        self._monitor.set_quiet(False)
         lang = LANGS[self._window._lang]
         icon = None
         if status == STATUS_SUCCESS:
@@ -815,6 +820,7 @@ class RapooApp(Gtk.Application):
         self._quitting = True
         if self._pair_session is not None:
             self._pair_session.cancel()
+        self._monitor.set_quiet(False)
         self._monitor.stop()
         Notify.uninit()
         self.quit()

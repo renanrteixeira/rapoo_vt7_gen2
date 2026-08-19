@@ -353,7 +353,7 @@ captured before any write.
       left-click and allowed it while another button (BLE) kept left. Suite
       273 OK (review fixes → 283 OK). One defer: `_on_set_rf` English string
       (story 3-2).
-- [ ] **B5** System: factory reset, device name, receiver pairing
+- [x] **B5** System: factory reset, device name, receiver pairing
       — receiver-pairing **protocol discovery done** (2026-08-16, story 5-3):
       commands `0xA0`/`0xA1`/`0xA7` + connected-mouse VID/PID poll mapped in
       `protocol.py`/`pairing.py`; `tools/probe.py --pair-discover` (receiver-only
@@ -362,6 +362,26 @@ captured before any write.
       2026-08-17** (VID/PID ✅ `24AE/4613`; `0xA7` ✅ `data[2]=0` = failed;
       `0xA0`/`0xA1` 🔶 — replies feature-report-only, unreadable on hidraw;
       receiver sleeps without a wireless mouse in range).
+      **Guided receiver pairing DONE (story 5-4)**: `pairing_session.py` runs
+      the A Hub `MatcherDialog` flow on its own daemon thread + own receiver fd
+      (no hidraw contention): 0xA5 `start_match`+`write_rf` (random RF) behind
+      a **3× 0xA7 readiness gate** (never fires destructive frames into a
+      sleeping receiver), then a bounded matching loop (60 s window) listening
+      report 7 for **0xB1** (captured by the 0xA7 poll via `capture_report7`,
+      not swallowed), polling 0xA7 and the connected VID/PID. **Success/failure
+      semantics (F1)**: 0 = "no match in progress yet" (validated) — zeros only
+      FAIL after a prior non-zero result byte + 2 consecutive zeros; until then
+      they wait out the window (TIMEOUT). Success candidates (🔶, pinned by
+      on-device `--pair-run`): 0xB1, 2× non-zero 0xA7, VID/PID that appears
+      DURING the run (not at baseline). Window tab "Sistema" (renamer via
+      `system.py encode_name`, pairing dialog with progress steps + cancel,
+      factory reset gated); **all System-tab destructive buttons cross-disabled
+      while any op is in flight (F5)**. During a pairing session the battery
+      monitor goes **listen-only** (`BatteryMonitor.set_quiet`): no 0xAA, no
+      fallback, tasks deferred (F3); the monitor also ignores the 0xB0/0xB1
+      pairing reports as battery (F2). Retro epic-5 findings F1-F12 applied
+      (2026-08-18): suite 478 OK. Ask First on-device pendings: `--pair-run`
+      (pin success semantics), factory reset 0xAD.
 
 ---
 

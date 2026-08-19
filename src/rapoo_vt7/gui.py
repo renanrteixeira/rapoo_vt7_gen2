@@ -813,16 +813,39 @@ class BatteryWindow:
         self._pair_status.set_margin_top(6)
         vbox.pack_start(self._pair_status, False, False, 0)
 
+    def _system_op_in_flight(self):
+        """True while ANY System-tab write/destructive operation is in flight
+        (rename, factory reset or receiver pairing). Used to keep them
+        mutually exclusive: two destructive writers must never interleave on
+        the same receiver."""
+        return bool(
+            getattr(self, "_pair_busy", False)
+            or getattr(self, "_system_busy", False)
+            or getattr(self, "_name_busy", False)
+        )
+
+    def _update_system_sensitivity(self):
+        """Cross-disables the System-tab write/destructive buttons while any
+        operation is in flight (F5). `_pair_cancel` stays independent — it is
+        driven by the running session itself. Defensive over partial window
+        builds (unit tests construct sub-sections)."""
+        busy = self._system_op_in_flight()
+        for attr in ("_pair_button", "_system_button", "_name_button"):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.set_sensitive(not busy)
+
     def _on_pairing_clicked(self, btn):
         """Confirmation dialog (explicit and blocking) before the pairing.
 
         The dialog re-reads its labels at show time (current language). OK
         triggers the session through the `on_start_pairing` callback (main.py
         starts the session on its own thread); Cancel closes without sending
-        anything. While a run is in flight the button is disabled and further
-        clicks are ignored, so two sessions never start back to back.
+        anything. While any System operation is in flight the button is
+        disabled and further clicks are ignored, so two sessions never start
+        back to back and a session never starts mid-reset.
         """
-        if getattr(self, "_pair_busy", False):
+        if self._system_op_in_flight():
             return
         dialog = Gtk.MessageDialog(
             transient_for=self._win,
@@ -844,7 +867,7 @@ class BatteryWindow:
             self._pair_last_message = None
             self._pair_current_step = 0
             self._pair_busy = True
-            self._pair_button.set_sensitive(False)
+            self._update_system_sensitivity()
             self._pair_cancel.set_sensitive(True)
             self.update_pairing_state(0, None, None)
             self._on_start_pairing()
@@ -876,12 +899,15 @@ class BatteryWindow:
                 step.set_text(text)
         if status in _PAIRING_TERMINAL:
             self._pair_last_status = status
-            if message is not None:
-                self._pair_last_message = message
+            # Always refresh the stored message: a terminal result WITHOUT a
+            # message (success/failed/timeout/cancelled) must clear any stale
+            # error text from a previous run (F7), or a language change would
+            # re-render the old error instead of the correct status key.
+            self._pair_last_message = message
             self._pair_current_step = step_n or 0
             if getattr(self, "_pair_busy", False):
                 self._pair_busy = False
-                self._pair_button.set_sensitive(True)
+                self._update_system_sensitivity()
             self._pair_cancel.set_sensitive(False)
             text = message if message is not None else self._t(key)
             if is_error:
@@ -909,23 +935,24 @@ class BatteryWindow:
     def _on_rename_clicked(self, btn):
         """Rename button clicked: hands the entry text to `on_rename`.
 
-        Busy guard: while a rename is in flight the button is disabled and
-        further clicks are ignored, so two renames never queue back to back.
-        If the callback raises synchronously (e.g. a UnicodeEncodeError from a
-        lone surrogate in the entry), the busy flag is released again so the
+        Busy guard: while any System operation is in flight the button is
+        disabled and further clicks are ignored (two writes never queue back
+        to back, and a rename never interleaves with a reset/pairing). If the
+        callback raises synchronously (e.g. a UnicodeEncodeError from a lone
+        surrogate in the entry), the busy flag is released again so the
         button is never left disabled.
         """
-        if getattr(self, "_name_busy", False):
+        if self._system_op_in_flight():
             return
         if not self._on_rename:
             return
         self._name_busy = True
-        self._name_button.set_sensitive(False)
+        self._update_system_sensitivity()
         try:
             self._on_rename(self._name_entry.get_text())
         except Exception:
             self._name_busy = False
-            self._name_button.set_sensitive(True)
+            self._update_system_sensitivity()
             raise
 
     def update_device_name(self, name):
@@ -945,10 +972,11 @@ class BatteryWindow:
         reset through the `on_factory_reset` callback (main.py submit with
         wake=True); Cancel closes without sending anything.
 
-        While a reset is in flight the button is disabled and further clicks
-        are ignored, so two resets can never queue back to back.
+        While any System operation is in flight the button is disabled and
+        further clicks are ignored, so two resets can never queue back to back
+        and a reset never interleaves with a rename/pairing (F5).
         """
-        if getattr(self, "_system_busy", False):
+        if self._system_op_in_flight():
             return
         dialog = Gtk.MessageDialog(
             transient_for=self._win,
@@ -965,7 +993,7 @@ class BatteryWindow:
         dialog.destroy()
         if response == Gtk.ResponseType.OK and self._on_factory_reset:
             self._system_busy = True
-            self._system_button.set_sensitive(False)
+            self._update_system_sensitivity()
             self._on_factory_reset()
 
     def set_system_message(self, message, is_error=False, op=None):
@@ -980,11 +1008,11 @@ class BatteryWindow:
         if op == "system":
             if getattr(self, "_system_busy", False):
                 self._system_busy = False
-                self._system_button.set_sensitive(True)
+                self._update_system_sensitivity()
         elif op == "name":
             if getattr(self, "_name_busy", False):
                 self._name_busy = False
-                self._name_button.set_sensitive(True)
+                self._update_system_sensitivity()
         if is_error:
             self._system_status.set_markup(
                 "<span color='red'>%s</span>"

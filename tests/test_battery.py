@@ -154,6 +154,21 @@ class PassiveReportTest(unittest.TestCase):
         self.assertEqual(col.updates, [])
         self.assertEqual(col.states, [])
 
+    def test_pairing_subcommand_report_ignored(self):
+        # Receiver-pairing sub-command reports (0xB0/0xB1) are NOT battery
+        # reports — parsing them would flip the tray to a bogus mode/battery.
+        col = Collector()
+        mon = BatteryMonitor(on_update=col.on_update, on_state=col.on_state)
+        for sub in (protocol.PAIR_REPORT_PREFIX, protocol.PAIR_SUCCESS_REPORT):
+            data = bytearray(19)
+            data[0] = protocol.REPORT_PASSIVE
+            data[1] = sub
+            data[7] = protocol.BATTERY_STATUS_OK
+            data[8] = 80
+            mon._handle_report(bytes(data))
+        self.assertEqual(col.updates, [])
+        self.assertEqual(col.states, [])
+
 
 class PollTest(unittest.TestCase):
     def test_awake_silent_rescans_after_recheck(self):
@@ -247,6 +262,31 @@ class PollTest(unittest.TestCase):
             mon._poll(dev)
         self.assertEqual(dev.query_count, 1)
         self.assertEqual(col.updates, [(50, False, protocol.MODE_WIRELESS)])
+
+    def test_quiet_suppresses_first_query_and_fallback(self):
+        # A pairing session owns the command channel: the monitor must not
+        # send its 0xAA (first read OR fallback) while quiet (F3).
+        clock = FakeClock()
+        dev = FakeDev(
+            "/dev/hidraw5",
+            protocol.PREFIX_USB,
+            battery=(protocol.BATTERY_STATUS_CHARGING, 80),
+            clock=clock,
+            read_delta=1.0,
+        )
+        col = Collector()
+        mon = BatteryMonitor(
+            on_update=col.on_update,
+            on_state=col.on_state,
+            fallback=2.0,
+            recheck=10.0,
+        )
+        mon.set_quiet(True)
+        with mock.patch.object(battery.time, "monotonic", clock.monotonic):
+            mon._poll(dev)
+        self.assertEqual(dev.query_count, 0)
+        self.assertEqual(col.updates, [])
+        self.assertEqual(col.states, [])
 
 
 class InterfaceChangeTest(unittest.TestCase):
@@ -433,6 +473,26 @@ class TaskQueueTest(unittest.TestCase):
         mon.submit(
             lambda d: "ran", on_done=results.append, on_error=errors.append, wake=True
         )
+        self.assertTrue(self._wait(lambda: results or errors))
+        mon.stop()
+        mon._thread.join(3)
+        self.assertEqual(results, ["ran"])
+        self.assertEqual(errors, [])
+
+    def test_quiet_defers_tasks_until_session_ends(self):
+        dev = FakeDev(
+            "/dev/hidraw1",
+            protocol.PREFIX_WIRELESS,
+            battery=(protocol.BATTERY_STATUS_OK, 80),
+        )
+        mon = self._run_monitor([dev, dev, dev])
+        mon.set_quiet(True)
+        results, errors = [], []
+        mon.submit(lambda d: "ran", on_done=results.append, on_error=errors.append)
+        time.sleep(0.3)
+        self.assertEqual(results, [], "task must be deferred while quiet")
+        self.assertEqual(errors, [])
+        mon.set_quiet(False)
         self.assertTrue(self._wait(lambda: results or errors))
         mon.stop()
         mon._thread.join(3)

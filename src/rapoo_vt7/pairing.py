@@ -12,8 +12,8 @@ with the receiver prefix included:
 `sendWriteRF` in the bundle draws 4 random RF bytes; here `pairing_commands`
 does the same (`os.urandom(4)`) unless explicit bytes are supplied. The
 WebHID reply byte 1 of `sendGetMatchResult` — hidraw `data[2]` — is `0` when
-the match failed; any other value is unvalidated (🔶) and is only dumped raw,
-never interpreted.
+the match failed; any other value is a success candidate (🔶, unvalidated)
+consumed by the guided session and dumped raw by `tools/probe.py`.
 
 The connected-mouse poll comes from `docs/BaseSetting-CsajUb0l.js`
 (`getConnectedMouseVid`/`getConnectedMousePid`): a `read_eeprom` of 2 bytes
@@ -21,11 +21,13 @@ little-endian at the raw addresses 0x0000 (VID) and 0x0004 (PID). The WebHID
 bytes 4-5 are the raw `data[EEPROM_DATA_OFFSET..]`; non-zero means the
 receiver has a mouse attached.
 
-This module is DISCOVERY ONLY: it encodes the commands, builds the frames and
-decodes the read-only probes. The destructive `0xA0`/`0xA1` commands are never
-sent from the app; the `tools/probe.py --pair-discover` harness fires them only
-behind an Ask First gate (explicit flag + TTY confirmation, never auto). It
-mirrors the `system.py` `_read`/typed-error pattern.
+This module owns the command encoding, frame building and probe decoding.
+The destructive `0xA0`/`0xA1` commands have TWO write paths, both gated: the
+guided receiver-pairing session (`pairing_session.py`, story 5-4) sends them
+behind a blocking confirmation dialog in the app window, and
+`tools/probe.py --pair-discover`/`--pair-run` fires them behind an Ask First
+gate (explicit flag + TTY confirmation, never auto). The read-only 0xA7 poll
+runs in both. It mirrors the `system.py` `_read`/typed-error pattern.
 """
 
 import os
