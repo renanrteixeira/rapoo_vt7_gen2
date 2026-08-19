@@ -487,14 +487,20 @@ class RapooApp(Gtk.Application):
         self._refresh_buttons()
 
     def _button_error(self, exc):
-        lang = LANGS[self._window._lang]
-        if isinstance(exc, buttons.NoLeftClickError):
-            msg = lang["button_no_left"]
-        elif isinstance(exc, buttons.UnknownFunctionError):
-            msg = lang["button_unknown_fn"].format(fn=exc.args[0])
-        else:
-            msg = str(exc)
-        GLib.idle_add(self._window.set_buttons_error, msg)
+        """Runs on the monitor thread; hops to GTK BEFORE reading the
+        language, then localizes and surfaces the error (D1)."""
+
+        def hop():
+            lang = LANGS[self._window._lang]
+            if isinstance(exc, buttons.NoLeftClickError):
+                msg = lang["button_no_left"]
+            elif isinstance(exc, buttons.UnknownFunctionError):
+                msg = lang["button_unknown_fn"].format(fn=exc.args[0])
+            else:
+                msg = str(exc)
+            self._window.set_buttons_error(msg)
+
+        GLib.idle_add(hop)
 
     # --- System: factory reset (Phase 5, destructive + user-confirmed) ---
 
@@ -534,15 +540,20 @@ class RapooApp(Gtk.Application):
         self._refresh_name()
 
     def _factory_reset_error(self, exc):
-        """Runs on the monitor thread; hops to GTK to surface the error."""
-        lang = LANGS[self._window._lang]
-        if isinstance(exc, system.FactoryResetAckError):
-            msg = lang["factory_reset_ack_error"]
-        elif isinstance(exc, system.FactoryResetVerifyError):
-            msg = lang["factory_reset_verify_error"]
-        else:
-            msg = str(exc)
-        GLib.idle_add(self._window.set_system_message, msg, True, "system")
+        """Runs on the monitor thread; hops to GTK BEFORE reading the
+        language, then localizes and surfaces the error (D1)."""
+
+        def hop():
+            lang = LANGS[self._window._lang]
+            if isinstance(exc, system.FactoryResetAckError):
+                msg = lang["factory_reset_ack_error"]
+            elif isinstance(exc, system.FactoryResetVerifyError):
+                msg = lang["factory_reset_verify_error"]
+            else:
+                msg = str(exc)
+            self._window.set_system_message(msg, True, "system")
+
+        GLib.idle_add(hop)
 
     # --- System: device name (read on tab open, rename with verified write) ---
 
@@ -559,9 +570,12 @@ class RapooApp(Gtk.Application):
             GLib.idle_add(self._window.update_device_name, name)
 
         def err(exc):
-            lang = LANGS[self._window._lang]
-            msg = lang["name_read_error"].format(error=str(exc))
-            GLib.idle_add(self._window.set_system_message, msg, True, None)
+            def hop():
+                lang = LANGS[self._window._lang]
+                msg = lang["name_read_error"].format(error=str(exc))
+                self._window.set_system_message(msg, True, None)
+
+            GLib.idle_add(hop)
 
         self._monitor.submit(system.read_device_name, on_done=done, on_error=err)
 
@@ -595,22 +609,27 @@ class RapooApp(Gtk.Application):
         )
 
     def _rename_error(self, exc):
-        """Runs on the monitor thread; hops to GTK to surface the error.
+        """Runs on the monitor thread; hops to GTK BEFORE reading the
+        language, then localizes and surfaces the error (D1).
 
         A verify mismatch additionally re-reads the name so the entry shows
         what the mouse actually stored (not the unverified typed text).
         """
-        lang = LANGS[self._window._lang]
-        if isinstance(exc, system.NameTooLongError):
-            msg = lang["name_too_long"]
-        elif isinstance(exc, system.NameEmptyError):
-            msg = lang["name_empty"]
-        elif isinstance(exc, system.NameVerifyError):
-            msg = lang["name_verify_error"]
-            GLib.idle_add(self._refresh_name)
-        else:
-            msg = str(exc)
-        GLib.idle_add(self._window.set_system_message, msg, True, "name")
+
+        def hop():
+            lang = LANGS[self._window._lang]
+            if isinstance(exc, system.NameTooLongError):
+                msg = lang["name_too_long"]
+            elif isinstance(exc, system.NameEmptyError):
+                msg = lang["name_empty"]
+            elif isinstance(exc, system.NameVerifyError):
+                msg = lang["name_verify_error"]
+                self._refresh_name()
+            else:
+                msg = str(exc)
+            self._window.set_system_message(msg, True, "name")
+
+        GLib.idle_add(hop)
 
     # --- System: receiver pairing (story 5-4, own thread + own fd) ---
 

@@ -127,7 +127,7 @@ action_items:
     epic: 5
     action: "D1: hop via idle_add before reading _lang in the System error handlers"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-15-d3-ask-first-on-device-factory-reset-val"
     epic: 5
