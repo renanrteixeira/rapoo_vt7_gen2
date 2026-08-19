@@ -101,7 +101,7 @@ firmware does **not** respond to it.
   | 0xAD | return_factory_settings | — |
   | 0xA0 | **enter pairing mode** (receiver) | `[0x81]` — DESTRUCTIVE; Ask First; reply only on feature report (zerada no hidraw) |
   | 0xA1 | **write RF** (receiver) | `[0x8F, rf0..rf3]` — DESTRUCTIVE; Ask First; reply only on feature report |
-  | 0xA7 | **get match result** (receiver) | ✅ validated 2026-08-17: ACK on input 6, `data[2]`: 0 = falhou (observado `06 01 00...`); ≠0 🔶 |
+  | 0xA7 | **get match result** (receiver) | ✅ validated: ACK on input 6, `data[2]`; 0 = **"no match in progress"** (NÃO é falha — validado em 3 runs / ~5 min, persiste em todos os estados); ≠0 = sucesso 🔶 (não reproduzível com 1 mouse já pareado) |
 
 ### 3.2 Reply (INPUT Report 6)
 On hidraw the reply arrives as an **input report 6** (the feature report 8/9 is
@@ -380,8 +380,19 @@ captured before any write.
       monitor goes **listen-only** (`BatteryMonitor.set_quiet`): no 0xAA, no
       fallback, tasks deferred (F3); the monitor also ignores the 0xB0/0xB1
       pairing reports as battery (F2). Retro epic-5 findings F1-F12 applied
-      (2026-08-18): suite 478 OK. Ask First on-device pendings: `--pair-run`
-      (pin success semantics), factory reset 0xAD.
+      (2026-08-18): suite 478 OK. **On-device pairing runs (2026-08-18, 3
+      runs / ~5 min)** validated: `0xA7==0` persiste em TODOS os estados
+      (wireless, USB `data[1]=0x12` + charging `0x02`, cabo removido,
+      power-cycle, L+M+R) → 0 = "no match in progress" definitivo; flow
+      **não-destrutivo** (3× 0xA0/0xA1 preservaram o pareamento `24AE/4613`);
+      **sem falso positivo** (~5 min de mouse conectado). **Sinais de sucesso
+      NÃO reproduzíveis** com 1 mouse já pareado (achado documentado no
+      FEATURES.md §E): o receptor dorme sem mouse em range (0xA7 → no
+      response, nunca 0/matching) e o mouse re-linka no RF antigo — o
+      `deviceMatcher` só gera resultado para um mouse genuinamente **não
+      pareado** (ou exige unpair ainda não mapeado). Pendências Ask First:
+      factory reset 0xAD; pinar sucesso do pairing precisa de 2º mouse não
+      pareado.
 
 ---
 

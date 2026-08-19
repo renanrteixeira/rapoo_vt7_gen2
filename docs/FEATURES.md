@@ -126,7 +126,7 @@ switch), `07 00 00 00` (disable); media/window/edit `04 00 00 b6 …`, combos
 (not offered in the picker) until their write format is device-validated —
 their method derives from the bundle and needs a write test first.
 
-### E. System / firmware — ✅ commands, ⚠️ flows
+### E. System / firmware — ✅ commands, ⚠️ pairing-success signals (unobservable with a single paired mouse)
 | Item | Mechanism | Notes |
 |---|---|---|
 | Factory reset | `0xAD` `return_factory_settings` | ✅ implemented (`system.py` + "Sistema" tab: confirmation dialog + post-reset verification; command only — never writes EEPROM) |
@@ -305,10 +305,27 @@ recorded here. When resuming, start from the end of the last marked phase.
       **`--pair-run` harness (2026-08-18)**: fires the full 3-step flow and
       watches report 7 (flags the `0xB1` pairing-success sub-command) + polls
       `0xA7` every ~1.5 s, printing a result-byte history; same Ask First gate.
-      ⚠️ **On-device SUCCESS signals not yet pinned**: the session accepts
-      `0xB1` / persistent non-zero `0xA7` / connected VID+PID as candidates, but
-      which one the firmware actually sends on success is unobserved — run
-      `--pair-run` on hardware to pin it.
+      **On-device run (2026-08-18, 3 runs / ~5 min, mouse physically walked
+      through the 3 steps)**: `0xA7==0` persisted in EVERY state (wireless,
+      USB-cable `data[1]=0x12` + charging `0x02`, cable unplugged, power-cycled,
+      L+M+R) — **`data[2]==0` is definitively "no match in progress"**, NOT a
+      failure (the old 2-consecutive-zeros=FAILED would have aborted the run at
+      ~t=5 s while the user was still doing the steps; the F1 grace period is
+      hardware-validated). The flow is **non-destructive**: 3× `0xA0`+`0xA1`
+      never altered the existing pairing (VID/PID `24AE/4613` preserved). **No
+      false positives**: `0xB1` / non-zero `0xA7` never appeared under ~5 min of
+      a connected mouse + destructive frames, so the success candidates are
+      trustworthy. **SUCCESS signals NOT reproducible with this hardware
+      (documented blocker)**: the receiver sleeps when no wireless mouse is in
+      range (documented above; confirmed — `0xA7` went `no response` during the
+      ~28 s the mouse was disconnected, never `0`/matching), and an
+      already-paired mouse re-links on the old RF when it returns (`write_rf`
+      does not invalidate the existing pair) — so no new match is ever needed
+      and the `deviceMatcher` flow only yields a result for a genuinely
+      **unpaired** mouse (or requires an unpair command not yet mapped). The
+      session's success candidates (`0xB1`, 2× non-zero `0xA7`, VID/PID
+      appearing during a run) remain 🔶 but with validated negative evidence;
+      pinning them needs a second/unpaired mouse.
 
 **Receiver-pairing command reference** (A Hub `deviceMatcher` chunk
 `docs/index-B0XNTd12.js` + `BaseSetting-CsajUb0l.js`, extracted 2026-08-16;
@@ -331,7 +348,11 @@ The full matching flow ships as `python3 tools/probe.py --pair-run` (same gate;
 report 7 / `0xA7` for the result. The report-7 pairing sub-commands (`0xB0`
 base data / `0xB1` pairing success / `0xB3` disconnect) are recognized in the
 bundle and flagged when observed; the app session (`pairing_session.py`)
-treats `0xB1` as the primary success signal — **pending an on-device run**.
+treats `0xB1` as the primary success signal. On-device evidence (2026-08-18,
+3 runs) validated the failure/no-progress side (`0xA7==0` persists everywhere,
+no false positives) but could NOT produce a real match with a single
+already-paired mouse (receiver sleeps without a mouse in range; the old pair
+re-links on its RF) — see the finding above.
 
 ### Phase 6 — Advanced (caution)
 - [ ] Macros: only if the VT7 support is confirmed (the bundle's macro protocol

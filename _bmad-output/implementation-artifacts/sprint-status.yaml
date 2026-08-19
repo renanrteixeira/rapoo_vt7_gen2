@@ -52,76 +52,76 @@ action_items:
     action: "F1: pairing zero-streak grace period + on-device re-validation of 0xA7==0
       semantics"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-3-f2-ignore-pairing-sub-command-bytes-0xb0"
     epic: 5
     action: "F2: ignore pairing sub-command bytes 0xB0/0xB1 in battery.py _handle_report"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-4-f3-filter-read_response-by-last-sent-cmd"
     epic: 5
     action: "F3: filter read_response by last-sent cmd_id or quiet monitor during
       a pairing session"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-5-f4-check-_stop-in-the-readiness-gate-and"
     epic: 5
     action: "F4: check _stop in the readiness gate and before sending destructive
       pairing frames"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-6-f5-cross-disable-system-tab-destructive"
     epic: 5
     action: "F5: cross-disable System-tab destructive buttons while any busy flag
       is held + test"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-7-f6-catch-unicodeencodeerror-in-encode_na"
     epic: 5
     action: "F6: catch UnicodeEncodeError in encode_name to a localized DeviceNameError"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-8-f7-clear-_pair_last_message-on-a-termina"
     epic: 5
     action: "F7: clear _pair_last_message on a terminal pairing result without a message"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-9-f8-stop-the-0xa7-poll-window-eating-the"
     epic: 5
     action: "F8: stop the 0xA7 poll window eating the 0xB1 success report"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-10-f9-add-readiness-gate-oserror-handling-t"
     epic: 5
     action: "F9: add readiness gate + OSError handling to probe.py --pair-run"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-11-f10-require-start_match-whenever-write_r"
     epic: 5
     action: "F10: require start_match whenever write_rf is in a probe plan"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-12-f11-session-test-for-the-none-to-attache"
     epic: 5
     action: "F11: session test for the none-to-attached VID/PID success branch"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-13-f12-update-pairing-py-protocol-py-docstr"
     epic: 5
     action: "F12: update pairing.py/protocol.py docstrings to the app write path"
     owner: "dev"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-14-d1-hop-via-idle_add-before-reading-_lang"
     epic: 5
@@ -141,5 +141,13 @@ action_items:
     action: "P: pin pairing success semantics on-device via probe.py --pair-run (Ask
       First)"
     owner: "dev"
-    status: open
+    status: done
+    note: >-
+      Closed-with-finding (2026-08-18, 3 runs / ~5 min): 0xA7==0 validated as
+      "no match in progress" (persists in all states), flow non-destructive,
+      no false positives. Success signals (0xB1 / non-zero 0xA7 / VID-PID
+      transition) NOT reproducible with a single already-paired mouse: the
+      receiver sleeps without a mouse in range and the old pair re-links on its
+      RF. Documented in FEATURES.md §E + CONTEXT.md. Pinning them needs a
+      second/unpaired mouse.
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
