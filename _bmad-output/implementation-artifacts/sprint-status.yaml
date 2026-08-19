@@ -1,5 +1,5 @@
 generated: 08-10-2026 20:13
-last_updated: 08-18-2026
+last_updated: 08-18-2026 00:00
 project: rapoo_vt7_gen2
 project_key: NOKEY
 tracking_system: file-system
@@ -38,7 +38,7 @@ development_status:
   5-2-device-name-read-and-rename: done
   5-3-receiver-pairing-protocol-discovery: done
   5-4-guided-receiver-pairing: done
-  epic-5-retrospective: optional
+  epic-5-retrospective: done
 
 action_items:
   - id: s3-review
@@ -47,3 +47,99 @@ action_items:
       formats, answer open questions 1/3/6/7 and feed findings into the
       spec-1-3 memlog; then flip 1-3 to done.
     status: done
+  - id: "epic-5-retro-item-2-f1-pairing-zero-streak-grace-period-on-d"
+    epic: 5
+    action: "F1: pairing zero-streak grace period + on-device re-validation of 0xA7==0
+      semantics"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-3-f2-ignore-pairing-sub-command-bytes-0xb0"
+    epic: 5
+    action: "F2: ignore pairing sub-command bytes 0xB0/0xB1 in battery.py _handle_report"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-4-f3-filter-read_response-by-last-sent-cmd"
+    epic: 5
+    action: "F3: filter read_response by last-sent cmd_id or quiet monitor during
+      a pairing session"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-5-f4-check-_stop-in-the-readiness-gate-and"
+    epic: 5
+    action: "F4: check _stop in the readiness gate and before sending destructive
+      pairing frames"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-6-f5-cross-disable-system-tab-destructive"
+    epic: 5
+    action: "F5: cross-disable System-tab destructive buttons while any busy flag
+      is held + test"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-7-f6-catch-unicodeencodeerror-in-encode_na"
+    epic: 5
+    action: "F6: catch UnicodeEncodeError in encode_name to a localized DeviceNameError"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-8-f7-clear-_pair_last_message-on-a-termina"
+    epic: 5
+    action: "F7: clear _pair_last_message on a terminal pairing result without a message"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-9-f8-stop-the-0xa7-poll-window-eating-the"
+    epic: 5
+    action: "F8: stop the 0xA7 poll window eating the 0xB1 success report"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-10-f9-add-readiness-gate-oserror-handling-t"
+    epic: 5
+    action: "F9: add readiness gate + OSError handling to probe.py --pair-run"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-11-f10-require-start_match-whenever-write_r"
+    epic: 5
+    action: "F10: require start_match whenever write_rf is in a probe plan"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-12-f11-session-test-for-the-none-to-attache"
+    epic: 5
+    action: "F11: session test for the none-to-attached VID/PID success branch"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-13-f12-update-pairing-py-protocol-py-docstr"
+    epic: 5
+    action: "F12: update pairing.py/protocol.py docstrings to the app write path"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-14-d1-hop-via-idle_add-before-reading-_lang"
+    epic: 5
+    action: "D1: hop via idle_add before reading _lang in the System error handlers"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-15-d3-ask-first-on-device-factory-reset-val"
+    epic: 5
+    action: "D3: Ask First on-device factory-reset validation + confirm the 0xAD wire
+      form"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-5-retro-item-16-p-pin-pairing-success-semantics-on-devic"
+    epic: 5
+    action: "P: pin pairing success semantics on-device via probe.py --pair-run (Ask
+      First)"
+    owner: "dev"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
