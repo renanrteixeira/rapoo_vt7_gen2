@@ -278,7 +278,7 @@ captured before any write.
       when it changes. **Empty-tab recovery**: if the mouse was asleep at
       startup the DPI tab stays empty — every connected/open event re-checks
       `window.has_dpi()` and reloads when missing (`_maybe_refresh_dpi`).
-- [ ] **B3** Performance/parameters: modes, RF, polling, glass, debounce, lift-off, sleep
+- [x] **B3** Performance/parameters: modes, RF, polling, glass, debounce, lift-off, sleep
       — **modes done** (story 5): the sensor mode is a **7-slot table**
       `0x08DC..0x08E2` (one byte per polling-rate index 0..6; value = mode id
       0..5; ⚠️ id→name is the REVERSE of the A Hub UI card order — **0 Office,
@@ -336,6 +336,11 @@ captured before any write.
       hardware; difference annotated in FEATURES.md §2.C). Debounce/sleep/
       angle byte maps are our inference (defaults agree); definitive = diff
       an A Hub write (P9).
+      **B3 CLOSED (2026-08-19)**: all sub-features implemented, unit-tested
+      and validated on the real device (modes/RF/rate 2026-08-11, §C write-test
+      2026-08-11, selectable sliders 2026-08-12). Single follow-up: **P9** —
+      diff an A Hub write to definitively confirm the debounce/sleep/angle
+      byte maps.
 - [x] **B4** Button remap (extract function codes from the bundle)
       — done (story 4-1): each of the 13 buttons has a bank-0 EEPROM field
       (`0x0600`–`0x0638`) storing a **4-byte method** `<type><p1><p2><p3>`,
