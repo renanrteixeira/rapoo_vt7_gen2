@@ -12,11 +12,10 @@ The method table comes from the A Hub chunk `keyPosition-D9HhW_CA.js`
 (downloaded to /tmp/opencode/ahub-chunks/). The type byte groups the
 function: 0x03 mouse button, 0x08 DPI, 0x09 fire/sniper, 0x0a config/DIY,
 0x0b/0x0c scroll, 0x07 disable, 0x04 media, 0x02 combo, 0x05 macro.
-Keyboard keys are a single HID usage byte and combos/macros have their own
-formats — those categories are NOT offered in the picker yet (their write
-formats derive from the bundle and are gated until device-validated). Only
-the confirmed 4-byte function methods are shippable. `METHODS` is the picker
-offer list; `_DECODE_ONLY` labels read-backs (BLE left variant, gated combos)
+Keyboard keys (`00 00 <HID> 00`, HID usage byte) and combos (`02 <key1>
+<modifier> <key2>`) and macros (`05 00 <slot> 00`) derive from the bundle and
+are shippable after their write formats are device-validated. `METHODS` is
+the picker offer list; `_DECODE_ONLY` labels read-backs (BLE left variant)
 without offering them.
 """
 
@@ -96,6 +95,230 @@ METHODS = {
 # gated until their write formats are device-validated.
 _DECODE_ONLY = {
     "mouse_left_ble": bytes.fromhex("03000101"),
+}
+
+# Keyboard keys (keyType 1 of the A Hub keyPosition table): key id -> HID
+# usage byte. The mouse stores a keyboard assignment as `00 00 <HID> 00`
+# (the bundle pads the single HID byte into the 4-byte method).
+KEYBOARD = {
+    "kb_esc": 0x29,
+    "kb_f1": 0x3a,
+    "kb_f2": 0x3b,
+    "kb_f3": 0x3c,
+    "kb_f4": 0x3d,
+    "kb_f5": 0x3e,
+    "kb_f6": 0x3f,
+    "kb_f7": 0x40,
+    "kb_f8": 0x41,
+    "kb_f9": 0x42,
+    "kb_f10": 0x43,
+    "kb_f11": 0x44,
+    "kb_f12": 0x45,
+    "kb_tilde": 0x35,
+    "kb_1": 0x1e,
+    "kb_2": 0x1f,
+    "kb_3": 0x20,
+    "kb_4": 0x21,
+    "kb_5": 0x22,
+    "kb_6": 0x23,
+    "kb_7": 0x24,
+    "kb_8": 0x25,
+    "kb_9": 0x26,
+    "kb_0": 0x27,
+    "kb_dash": 0x2d,
+    "kb_plus": 0x2e,
+    "kb_backspace": 0x2a,
+    "kb_tab": 0x2b,
+    "kb_q": 0x14,
+    "kb_w": 0x1a,
+    "kb_e": 0x08,
+    "kb_r": 0x15,
+    "kb_t": 0x17,
+    "kb_y": 0x1c,
+    "kb_u": 0x18,
+    "kb_i": 0x0c,
+    "kb_o": 0x12,
+    "kb_p": 0x13,
+    "kb_bracket_left": 0x2f,
+    "kb_bracket_right": 0x30,
+    "kb_backslash": 0x31,
+    "kb_caps": 0x39,
+    "kb_a": 0x04,
+    "kb_s": 0x16,
+    "kb_d": 0x07,
+    "kb_f": 0x09,
+    "kb_g": 0x0a,
+    "kb_h": 0x0b,
+    "kb_j": 0x0d,
+    "kb_k": 0x0e,
+    "kb_l": 0x0f,
+    "kb_semicolon": 0x33,
+    "kb_quote": 0x34,
+    "kb_enter": 0x28,
+    "kb_shift_left": 0xe1,
+    "kb_z": 0x1d,
+    "kb_x": 0x1b,
+    "kb_c": 0x06,
+    "kb_v": 0x19,
+    "kb_b": 0x05,
+    "kb_n": 0x11,
+    "kb_m": 0x10,
+    "kb_comma": 0x36,
+    "kb_period": 0x37,
+    "kb_slash": 0x38,
+    "kb_shift_right": 0xe5,
+    "kb_ctrl_left": 0xe0,
+    "kb_win_left": 0xe3,
+    "kb_alt_left": 0xe2,
+    "kb_space": 0x2c,
+    "kb_alt_right": 0xe6,
+    "kb_win_right": 0xe7,
+    "kb_menu": 0x65,
+    "kb_ctrl_right": 0xe4,
+    "kb_prtsc": 0x46,
+    "kb_scroll": 0x47,
+    "kb_pause": 0x48,
+    "kb_insert": 0x49,
+    "kb_home": 0x4a,
+    "kb_pgup": 0x4b,
+    "kb_delete": 0x4c,
+    "kb_end": 0x4d,
+    "kb_pgdn": 0x4e,
+    "kb_arrow_up": 0x52,
+    "kb_arrow_left": 0x50,
+    "kb_arrow_down": 0x51,
+    "kb_arrow_right": 0x4f,
+    "kb_numlock": 0x53,
+    "kp_slash": 0x54,
+    "kp_asterisk": 0x55,
+    "kp_minus": 0x56,
+    "kp_7": 0x5f,
+    "kp_8": 0x60,
+    "kp_9": 0x61,
+    "kp_4": 0x5c,
+    "kp_5": 0x5d,
+    "kp_6": 0x5e,
+    "kp_plus": 0x57,
+    "kp_1": 0x59,
+    "kp_2": 0x5a,
+    "kp_3": 0x5b,
+    "kp_enter": 0x58,
+    "kp_0": 0x62,
+    "kp_decimal": 0x63,
+}
+
+# Language-neutral keyboard key labels (from the A Hub keyPosition table).
+KEYBOARD_LABEL = {
+    "kb_esc": "Esc",
+    "kb_f1": "F1",
+    "kb_f2": "F2",
+    "kb_f3": "F3",
+    "kb_f4": "F4",
+    "kb_f5": "F5",
+    "kb_f6": "F6",
+    "kb_f7": "F7",
+    "kb_f8": "F8",
+    "kb_f9": "F9",
+    "kb_f10": "F10",
+    "kb_f11": "F11",
+    "kb_f12": "F12",
+    "kb_tilde": "`",
+    "kb_1": "1",
+    "kb_2": "2",
+    "kb_3": "3",
+    "kb_4": "4",
+    "kb_5": "5",
+    "kb_6": "6",
+    "kb_7": "7",
+    "kb_8": "8",
+    "kb_9": "9",
+    "kb_0": "0",
+    "kb_dash": "-",
+    "kb_plus": "=",
+    "kb_backspace": "Back",
+    "kb_tab": "Tab",
+    "kb_q": "Q",
+    "kb_w": "W",
+    "kb_e": "E",
+    "kb_r": "R",
+    "kb_t": "T",
+    "kb_y": "Y",
+    "kb_u": "U",
+    "kb_i": "I",
+    "kb_o": "O",
+    "kb_p": "P",
+    "kb_bracket_left": "[",
+    "kb_bracket_right": "]",
+    "kb_backslash": "\\",
+    "kb_caps": "Caps",
+    "kb_a": "A",
+    "kb_s": "S",
+    "kb_d": "D",
+    "kb_f": "F",
+    "kb_g": "G",
+    "kb_h": "H",
+    "kb_j": "J",
+    "kb_k": "K",
+    "kb_l": "L",
+    "kb_semicolon": ";",
+    "kb_quote": "'",
+    "kb_enter": "Enter",
+    "kb_shift_left": "Shift",
+    "kb_z": "Z",
+    "kb_x": "X",
+    "kb_c": "C",
+    "kb_v": "V",
+    "kb_b": "B",
+    "kb_n": "N",
+    "kb_m": "M",
+    "kb_comma": ",",
+    "kb_period": ".",
+    "kb_slash": "/",
+    "kb_shift_right": "Shift",
+    "kb_ctrl_left": "Ctrl",
+    "kb_win_left": "Win",
+    "kb_alt_left": "Alt",
+    "kb_space": "Space",
+    "kb_alt_right": "Alt",
+    "kb_win_right": "Win",
+    "kb_menu": "Menu",
+    "kb_ctrl_right": "Ctrl",
+    "kb_prtsc": "PrtSc",
+    "kb_scroll": "Scroll",
+    "kb_pause": "Pause",
+    "kb_insert": "Insert",
+    "kb_home": "Home",
+    "kb_pgup": "PgUp",
+    "kb_delete": "Delete",
+    "kb_end": "End",
+    "kb_pgdn": "PgDn",
+    "kb_arrow_up": "↑",
+    "kb_arrow_left": "←",
+    "kb_arrow_down": "↓",
+    "kb_arrow_right": "→",
+    "kb_numlock": "Num",
+    "kp_slash": "/",
+    "kp_asterisk": "*",
+    "kp_minus": "-",
+    "kp_7": "7",
+    "kp_8": "8",
+    "kp_9": "9",
+    "kp_4": "4",
+    "kp_5": "5",
+    "kp_6": "6",
+    "kp_plus": "+",
+    "kp_1": "1",
+    "kp_2": "2",
+    "kp_3": "3",
+    "kp_enter": "Enter",
+    "kp_0": "0",
+    "kp_decimal": ".Del",
+}
+
+# Fixed combos (keyType 2 of the keyPosition table, type 0x02 prefix). These
+# are the A Hub preset combinations — offered in the picker alongside the
+# keyboard keys once their write format is device-validated.
+COMBO = {
     "win_close": bytes.fromhex("023d0400"),
     "win_lock": bytes.fromhex("020f0800"),
     "win_app": bytes.fromhex("02150800"),
@@ -107,6 +330,52 @@ _DECODE_ONLY = {
     "edit_cut": bytes.fromhex("021b0100"),
     "edit_select_all": bytes.fromhex("02040100"),
 }
+
+# Modifier keys (for building custom combos): key id -> bit in the combo
+# modifier byte. The A Hub builds `02 <key1> <modifier> <key2>` with the
+# modifier byte a plain bitmask (Ctrl L = 0x01, Shift L = 0x02, Alt L = 0x04,
+# Win L = 0x08, Ctrl R = 0x10, Shift R = 0x20, Alt R = 0x40, Win R = 0x80).
+MODIFIER = {
+    "kb_ctrl_left": 0x01,
+    "kb_shift_left": 0x02,
+    "kb_alt_left": 0x04,
+    "kb_win_left": 0x08,
+    "kb_ctrl_right": 0x10,
+    "kb_shift_right": 0x20,
+    "kb_alt_right": 0x40,
+    "kb_win_right": 0x80,
+}
+
+# Macros (keyType 8): 12 slots, stored as `05 00 <slot> 00` methods. The
+# macro CONTENTS live elsewhere in EEPROM (the A Hub macro editor) — the
+# picker only assigns a slot to a button.
+MACRO_SLOTS = 12
+
+
+def keyboard_method(key):
+    """4-byte method for a keyboard key: `00 00 <HID> 00`."""
+    return bytes((0x00, 0x00, KEYBOARD[key], 0x00))
+
+
+def combo_method(key1, modifier=0, key2=None):
+    """4-byte combo method `02 <key1> <modifier> <key2>`.
+
+    Matches the A Hub `L()`: a single-key combo pads key2 with 0x00
+    (e.g. Alt+F4 = `02 3d 04 00`); two keys set key2 (`02 k1 mod k2`).
+    """
+    if key2 is None:
+        return bytes((0x02, KEYBOARD[key1], modifier, 0x00))
+    return bytes((0x02, KEYBOARD[key1], modifier, KEYBOARD[key2]))
+
+
+def macro_method(slot):
+    """4-byte macro method `05 00 <slot> 00` for a macro slot 0..11."""
+    return bytes((0x05, 0x00, slot, 0x00))
+
+
+# Reverse maps for decode.
+_HID_BY_KEY = {hid: key for key, hid in KEYBOARD.items()}
+_MODIFIER_BY_BIT = {bit: key for key, bit in MODIFIER.items()}
 
 # Decode-only preference for shared methods: when two physical buttons hold
 # the same method bytes (scroll fwd/back = 0b ff 00 ff), the picker label
@@ -121,6 +390,10 @@ for _fid, _method in METHODS.items():
     _ID_BY_METHOD.setdefault(_method, _fid)  # first id wins on collisions
 for _fid, _method in _DECODE_ONLY.items():
     _ID_BY_METHOD.setdefault(_method, _fid)
+for _fid, _method in COMBO.items():
+    _ID_BY_METHOD.setdefault(_method, _fid)
+for _slot in range(MACRO_SLOTS):
+    _ID_BY_METHOD.setdefault(macro_method(_slot), "macro_%d" % _slot)
 
 
 def _addr(offset):
@@ -146,11 +419,15 @@ def method_name(method, button=None):
 
     The scroll direction is contextual: both physical scroll buttons hold
     `0b ff 00 ff`, so when `button` names one of them the matching direction
-    id is returned (otherwise the first id wins, as before).
+    id is returned (otherwise the first id wins, as before). Keyboard keys
+    (`00 00 <HID> 00`) decode to their `kb_`/`kp_` key id.
     """
-    fid = _ID_BY_METHOD.get(bytes(method))
+    b = bytes(method)
+    fid = _ID_BY_METHOD.get(b)
     if fid == "scroll_forward" and button in _SCROLL_BY_BUTTON:
         return _SCROLL_BY_BUTTON[button]
+    if fid is None and len(b) == 4 and b[0] == 0x00 and b[1] == 0x00 and b[3] == 0x00:
+        return _HID_BY_KEY.get(b[2])
     return fid
 
 
@@ -219,8 +496,29 @@ class NoLeftClickError(ValueError):
 
 
 class UnknownFunctionError(ValueError):
-    """`set_function` received a function id that is not in `METHODS`. The UI
-    translates this into a localized message."""
+    """`set_function` received a function id that is not in the offer lists.
+    The UI translates this into a localized message."""
+
+
+def function_method(fn_id):
+    """4-byte method for a function id across every offer category.
+
+    Resolves `METHODS`, `COMBO`, `KEYBOARD` (encoded `00 00 <HID> 00`) and
+    `macro_<slot>`. Returns None for an unknown id.
+    """
+    method = METHODS.get(fn_id)
+    if method is not None:
+        return method
+    method = COMBO.get(fn_id)
+    if method is not None:
+        return method
+    if fn_id in KEYBOARD:
+        return keyboard_method(fn_id)
+    if fn_id.startswith("macro_") and fn_id[6:].isdigit():
+        slot = int(fn_id[6:])
+        if 0 <= slot < MACRO_SLOTS:
+            return macro_method(slot)
+    return None
 
 
 def set_function(dev, name, fn_id, keep_left=True):
@@ -232,12 +530,12 @@ def set_function(dev, name, fn_id, keep_left=True):
     is refused for a non-left-click function (the ≥1-left-button rule) unless
     another button is already left-click-capable.
     """
-    if fn_id not in METHODS:
+    method = function_method(fn_id)
+    if method is None:
         raise UnknownFunctionError(fn_id)
     if name not in _BUTTON_BY_NAME:
         raise ValueError("unknown button %r" % name)
     addr = _addr(_BUTTON_BY_NAME[name])
-    method = METHODS[fn_id]
     current = _read(dev, addr, 4)
     if keep_left and is_left_click(current) and not is_left_click(method):
         # The button being remapped away from left-click is only allowed when

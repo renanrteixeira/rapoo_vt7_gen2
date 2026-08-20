@@ -438,20 +438,20 @@ class RapooApp(Gtk.Application):
         GLib.idle_add(self._window.set_params_error, str(exc))
 
     def _on_set_button(self, name, fid):
-        """Button-combo changed: assign a confirmed function method to the
-        button, verified by re-reading (a mismatch rejects the change).
+        """Button-combo changed: assign a function method to the button,
+        verified by re-reading (a mismatch rejects the change).
         User-initiated: attempted even while the mouse is asleep. The ≥1
         left-click rule is enforced twice: before submitting (last-known
         state, fast refusal) and inside `buttons.set_function` (live reads,
         authoritative)."""
-        if fid not in buttons.METHODS:
+        if buttons.function_method(fid) is None:
             self._button_error(buttons.UnknownFunctionError(fid))
             return
         info = self._window.get_buttons_info()
         if info is not None and not info.get("errors"):
             state = info["buttons"].get(name)
             if state is not None and buttons.is_left_click(state["method"]):
-                method = buttons.METHODS[fid]
+                method = buttons.function_method(fid)
                 if not buttons.is_left_click(method):
                     others_left = any(
                         other != name

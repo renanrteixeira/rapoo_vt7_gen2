@@ -208,6 +208,69 @@ class ButtonsRenderPlanTest(unittest.TestCase):
         self.assertEqual(pickers["mouse_left"], ("mouse_left", "03000100", True))
         self.assertEqual(len(pickers), len(buttons.BUTTONS))
 
+
+class KeyboardFilterTest(unittest.TestCase):
+    def test_empty_query_returns_all_keys(self):
+        self.assertEqual(
+            len(gui.BatteryWindow._filter_keys("")), len(buttons.KEYBOARD)
+        )
+        self.assertEqual(
+            len(gui.BatteryWindow._filter_keys("  ")), len(buttons.KEYBOARD)
+        )
+
+    def test_matches_by_id_and_label(self):
+        keys = gui.BatteryWindow._filter_keys("esc")
+        self.assertEqual(keys, ["kb_esc"])
+        keys = gui.BatteryWindow._filter_keys("f5")
+        self.assertEqual(keys, ["kb_f5"])
+        # Label match is case-insensitive too.
+        keys = gui.BatteryWindow._filter_keys("PgUp")
+        self.assertEqual(keys, ["kb_pgup"])
+
+    def test_case_insensitive(self):
+        keys = gui.BatteryWindow._filter_keys("HOME")
+        self.assertEqual(keys, ["kb_home"])
+
+    def test_substring_across_keys(self):
+        keys = gui.BatteryWindow._filter_keys("arrow")
+        self.assertIn("kb_arrow_up", keys)
+        self.assertIn("kb_arrow_down", keys)
+        self.assertEqual(len(keys), 4)
+
+    def test_no_match(self):
+        self.assertEqual(gui.BatteryWindow._filter_keys("zzzz"), [])
+
+
+class ButtonFnLabelTest(unittest.TestCase):
+    def _win(self, lang="en"):
+        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
+        window._lang = lang
+        return window
+
+    def test_confirmed_function_uses_i18n(self):
+        self.assertEqual(
+            self._win()._button_fn_label("mouse_left"),
+            i18n.LANGS["en"]["fn_mouse_left"],
+        )
+
+    def test_keyboard_key_uses_neutral_label(self):
+        self.assertEqual(self._win()._button_fn_label("kb_esc"), "Esc")
+        self.assertEqual(self._win()._button_fn_label("kb_arrow_up"), "↑")
+
+    def test_macro_label_numbering(self):
+        self.assertEqual(
+            self._win()._button_fn_label("macro_0"), "Macro 1"
+        )
+        self.assertEqual(
+            self._win()._button_fn_label("macro_11"), "Macro 12"
+        )
+
+    def test_combo_uses_i18n(self):
+        self.assertEqual(
+            self._win()._button_fn_label("win_close"),
+            i18n.LANGS["en"]["fn_win_close"],
+        )
+
     def test_unknown_method_shows_raw_hex_and_stays_enabled(self):
         info = buttons_info()
         info["buttons"]["mouse_bottom"] = {

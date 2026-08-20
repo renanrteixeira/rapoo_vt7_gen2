@@ -347,7 +347,7 @@ captured before any write.
       CONFIRMED ON DEVICE (2026-08-12) byte-for-byte against the A Hub
       `keyPosition` table; the full function table was extracted from the A Hub
       chunk `keyPosition-D9HhW_CA.js`. `buttons.py` ships `METHODS` (30
-      picker-offered functions) + `_DECODE_ONLY` (gated combos/BLE, read-back
+      picker-offered functions) + `_DECODE_ONLY` (BLE left variant, read-back
       labels only — Ask First), contextual scroll decode (`0bff00ff` → fwd/back
       per button), `read_button`/`read_section` (isolated per-field errors),
       `set_function` (write + readback verify + **≥1-left-click rule**,
@@ -358,6 +358,19 @@ captured before any write.
       left-click and allowed it while another button (BLE) kept left. Suite
       273 OK (review fixes → 283 OK). One defer: `_on_set_rf` English string
       (story 3-2).
+      **Keyboard keys / combos / macros in the picker DONE + VALIDATED ON DEVICE
+      (2026-08-19)**: write formats `00 00 <HID> 00` (keyboard, HID usage byte),
+      `02 <key1> <modifier> <key2>` (combo; single-key pads key2=00; modifier
+      byte = plain bitmask Ctrl L=01 Shift L=02 Alt L=04 Win L=08 Ctrl R=10
+      Shift R=20 Alt R=40 Win R=80) and `05 00 <slot> 00` (12 macro slots)
+      derive from the A Hub chunk `changeKey-uvZcd8Zo.js` (`I()`/`L()`/macro
+      table). Reversible write-test on 0x0634 (kb_a → 00000400, edit_copy →
+      02060100, macro_5 → 05000500; read-back verified; restored 0a000000)
+      MATCH. `buttons.py` adds `KEYBOARD` (104 keys), `KEYBOARD_LABEL`,
+      `COMBO` (10 A Hub presets), `MODIFIER`, `MACRO_SLOTS`, `keyboard_method`/
+      `combo_method`/`macro_method`/`function_method` (resolves every category);
+      the "Botões" tab now opens a **per-button picker dialog** with tabs
+      Funções | Teclado (searchable) | Combos | Macros. Suite 510 OK.
 - [x] **B5** System: factory reset, device name, receiver pairing
       — receiver-pairing **protocol discovery done** (2026-08-16, story 5-3):
       commands `0xA0`/`0xA1`/`0xA7` + connected-mouse VID/PID poll mapped in

@@ -121,10 +121,17 @@ Confirmed 4-byte methods (shipped in the picker): mouse buttons `03 00 01 00`
 (cycle+), `08 00 04 00` (cycle−); scroll `0b ff 00 ff` (up/down share the
 method), `0c ff 00 ff` (left), `0c ff 01 ff` (right); functions `09 00 02 00`
 (fire), `09 00 01 00` (sniper), `0a 00 00 00` (DIY), `0a 00 02 00` (config
-switch), `07 00 00 00` (disable); media/window/edit `04 00 00 b6 …`, combos
-`02 …`. Keyboard keys (single HID usage byte), combos and macros are **gated**
-(not offered in the picker) until their write format is device-validated —
-their method derives from the bundle and needs a write test first.
+switch), `07 00 00 00` (disable); media/window/edit `04 00 00 b6 …`; combos
+`02 <key1> <modifier> <key2>` (single-key pads key2=00); keyboard keys
+`00 00 <HID> 00`; macros `05 00 <slot> 00` (12 slots).
+**Keyboard/combos/macros in the picker DONE + VALIDATED on device (2026-08-19)**
+(reversible write-test on 0x0634: `kb_a`=`00 00 04 00`, combo `edit_copy`=
+`02 06 01 00`, `macro_5`=`05 00 05 00` → read-back verified → restored
+`0a 00 00 00`; MATCH). The "Botões" tab now opens a **per-button picker
+dialog** with tabs Funções | Teclado (searchable 104-key list) | Combos (A Hub
+presets) | Macros (12 slots). The modifier byte is a plain bitmask (Ctrl L
+=0x01, Shift L=0x02, Alt L=0x04, Win L=0x08, Ctrl R=0x10, Shift R=0x20,
+Alt R=0x40, Win R=0x80).
 
 ### E. System / firmware — ✅ commands, ⚠️ pairing-success signals (unobservable with a single paired mouse)
 | Item | Mechanism | Notes |
@@ -267,8 +274,12 @@ recorded here. When resuming, start from the end of the last marked phase.
       write-test on 0x0634).
 - [x] App business rule: **always keep at least 1 left button** (refused before
       the write and inside `buttons.set_function`).
-- [ ] Keyboard keys / combos / macros in the picker (write formats derive from
-      the bundle and are gated until device-validated — Ask First).
+- [x] Keyboard keys / combos / macros in the picker — **DONE + VALIDATED on
+      device (2026-08-19)**: write formats `00 00 <HID> 00`, `02 <key1> <mod>
+      <key2>`, `05 00 <slot> 00` confirmed by a reversible write-test on
+      0x0634 (kb_a / edit_copy / macro_5 → read-back → restored). The "Botões"
+      tab now opens a per-button **picker dialog** with tabs Funções | Teclado
+      (searchable, 104 keys) | Combos (A Hub presets) | Macros (12 slots).
 
 ### Phase 5 — System
 - [x] Factory reset (`0xAD`) with a confirmation dialog (story 9, CAP-8).

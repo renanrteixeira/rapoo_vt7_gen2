@@ -158,10 +158,12 @@ class ButtonsTableTest(unittest.TestCase):
                 self.assertIsNotNone(buttons.method_name(method))
 
     def test_decode_only_not_offered_in_picker(self):
-        # Combo/keyboard/macro and BLE-left codes label read-backs but are
-        # never offered as remap targets (gated until device-validated).
+        # Decode-only codes (BLE left-click variant) label read-backs but are
+        # never offered as remap targets.
         for fid in buttons._DECODE_ONLY:
             self.assertNotIn(fid, buttons.METHODS)
+            self.assertNotIn(fid, buttons.COMBO)
+            self.assertIsNone(buttons.function_method(fid))
 
     def test_methods_unique_except_scroll_pair(self):
         seen = {}
@@ -228,6 +230,79 @@ class DecodeTest(unittest.TestCase):
     def test_button_addr_format(self):
         self.assertEqual(buttons.button_addr("mouse_left"), "0x0600")
         self.assertEqual(buttons.button_addr("mouse_ble"), "0x0638")
+
+
+class KeyboardComboMacroTest(unittest.TestCase):
+    def test_keyboard_method_format(self):
+        self.assertEqual(
+            buttons.keyboard_method("kb_esc"), bytes.fromhex("00002900")
+        )
+        self.assertEqual(
+            buttons.keyboard_method("kb_a"), bytes.fromhex("00000400")
+        )
+
+    def test_keyboard_method_roundtrip(self):
+        for key in list(buttons.KEYBOARD)[:10]:
+            with self.subTest(key=key):
+                self.assertEqual(
+                    buttons.method_name(buttons.keyboard_method(key)), key
+                )
+
+    def test_combo_method_format(self):
+        # Alt+F4 = 02 <f4=3d> <alt_l=04> <00> (single-key combo pads key2=00).
+        self.assertEqual(
+            buttons.combo_method("kb_f4", 0x04), bytes.fromhex("023d0400")
+        )
+
+    def test_combo_method_with_two_keys(self):
+        # Custom Win+L = 02 <l=0f> <win_l=08> <l=0f>.
+        self.assertEqual(
+            buttons.combo_method("kb_l", 0x08, "kb_l"), bytes.fromhex("020f080f")
+        )
+
+    def test_macro_method(self):
+        self.assertEqual(buttons.macro_method(0), bytes.fromhex("05000000"))
+        self.assertEqual(buttons.macro_method(5), bytes.fromhex("05000500"))
+        self.assertEqual(buttons.macro_method(11), bytes.fromhex("05000b00"))
+
+    def test_macro_method_roundtrip(self):
+        for slot in range(buttons.MACRO_SLOTS):
+            with self.subTest(slot=slot):
+                self.assertEqual(
+                    buttons.method_name(buttons.macro_method(slot)),
+                    "macro_%d" % slot,
+                )
+
+    def test_preset_combos_decode(self):
+        # The preset combo methods come straight from the A Hub table.
+        self.assertEqual(buttons.method_name(bytes.fromhex("023d0400")), "win_close")
+        self.assertEqual(buttons.method_name(bytes.fromhex("020f0800")), "win_lock")
+        self.assertEqual(buttons.method_name(bytes.fromhex("02060100")), "edit_copy")
+
+    def test_function_method_resolves_every_category(self):
+        self.assertEqual(
+            buttons.function_method("mouse_left"), bytes.fromhex("03000100")
+        )
+        self.assertEqual(
+            buttons.function_method("win_close"), bytes.fromhex("023d0400")
+        )
+        self.assertEqual(
+            buttons.function_method("kb_esc"), bytes.fromhex("00002900")
+        )
+        self.assertEqual(buttons.function_method("macro_3"), bytes.fromhex("05000300"))
+        self.assertIsNone(buttons.function_method("nope"))
+        self.assertIsNone(buttons.function_method("macro_99"))
+
+    def test_keyboard_labels_complete(self):
+        self.assertEqual(len(buttons.KEYBOARD), len(buttons.KEYBOARD_LABEL))
+        for key in buttons.KEYBOARD:
+            self.assertIn(key, buttons.KEYBOARD_LABEL)
+
+    def test_modifier_bits(self):
+        self.assertEqual(buttons.MODIFIER["kb_ctrl_left"], 0x01)
+        self.assertEqual(buttons.MODIFIER["kb_alt_left"], 0x04)
+        self.assertEqual(buttons.MODIFIER["kb_win_left"], 0x08)
+        self.assertEqual(buttons.MODIFIER["kb_win_right"], 0x80)
 
 
 class ReadButtonTest(unittest.TestCase):
@@ -618,11 +693,22 @@ class I18nLabelBindingTest(unittest.TestCase):
                 )
 
     def test_every_decode_only_function_label_exists(self):
-        # Decode-only fns (BLE left variant, gated combos) still label the
-        # shown current function, so every one needs an i18n label too.
+        # Decode-only fns (BLE left variant) still label the shown current
+        # function, so every one needs an i18n label too.
         from src.rapoo_vt7 import i18n
 
         for fid in buttons._DECODE_ONLY:
+            for code, lang in i18n.LANGS.items():
+                self.assertIn(
+                    "fn_" + fid,
+                    lang,
+                    "locale %s missing fn_%s" % (code, fid),
+                )
+
+    def test_every_combo_label_exists_in_every_locale(self):
+        from src.rapoo_vt7 import i18n
+
+        for fid in buttons.COMBO:
             for code, lang in i18n.LANGS.items():
                 self.assertIn(
                     "fn_" + fid,

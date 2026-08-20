@@ -1048,36 +1048,171 @@ class BatteryWindow:
             self._render_buttons_pickers(pickers)
 
     def _render_buttons_pickers(self, pickers):
-        """Rebuilds the per-button combos. Each combo lists every confirmed
-        function plus the raw hex when the current method is unknown; the
-        marked entry is the button's current function."""
+        """Rebuilds the per-button picker rows. Each row shows the current
+        function label and a "choose" button that opens a dialog with tabs
+        (Funções | Teclado | Combos | Macros). The raw hex is shown when the
+        current method is unknown."""
         active = self._buttons_error is not None
         for i, (name, _offset) in enumerate(buttons.BUTTONS):
             lbl = Gtk.Label(label=self._t("btn_" + name))
             lbl.set_halign(Gtk.Align.START)
-            combo = Gtk.ComboBoxText()
             current, raw_hex, sensitive = pickers[name]
-            for fid in buttons.METHODS:
-                combo.append(fid, self._t("fn_" + fid))
-            if current is not None and current not in buttons.METHODS:
-                # Decode-only current (e.g. the BLE left-click variant): shown
-                # as a labelled row but not a writable option — re-selecting
-                # it is a no-op in _on_button_changed.
-                combo.append(current, self._t("fn_" + current))
-                combo.set_active_id(current)
-            elif current is None and raw_hex is not None:
-                combo.append("__raw__", self._t("button_raw").format(hex=raw_hex))
-                combo.set_active_id("__raw__")
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            current_label = Gtk.Label()
+            current_label.set_halign(Gtk.Align.START)
+            if current is not None:
+                current_label.set_text(self._button_fn_label(current))
+            elif raw_hex is not None:
+                current_label.set_text(self._t("button_raw").format(hex=raw_hex))
             else:
-                combo.set_active_id(current)
-            combo.set_sensitive(not active and sensitive)
-            combo.connect("changed", self._on_button_changed, name)
-            self._button_combos[name] = combo
+                current_label.set_text("--")
+            box.pack_start(current_label, True, True, 0)
+            pick = Gtk.Button(label=self._t("button_pick"))
+            pick.set_sensitive(not active and sensitive)
+            pick.connect("clicked", self._on_button_pick, name)
+            box.pack_start(pick, False, False, 0)
+            self._button_combos[name] = box
             self._buttons_grid.attach(lbl, 0, i, 1, 1)
-            self._buttons_grid.attach(combo, 1, i, 1, 1)
+            self._buttons_grid.attach(box, 1, i, 1, 1)
         self._buttons_grid.show_all()
 
+    def _button_fn_label(self, fid):
+        """Localized label of a function id across every offer category."""
+        if fid in buttons.KEYBOARD_LABEL:
+            return buttons.KEYBOARD_LABEL[fid]
+        if fid.startswith("macro_"):
+            try:
+                return self._t("fn_macro").format(n=int(fid[6:]) + 1)
+            except ValueError:
+                pass
+        return self._t("fn_" + fid)
+
+    def _on_button_pick(self, btn, name):
+        """Opens the per-button function picker dialog (Funções | Teclado |
+        Combos | Macros); a selection submits through `_on_set_button`."""
+        if not self._on_set_button:
+            return
+        state = self._buttons["buttons"].get(name) if self._buttons else None
+        current = state["fn"] if state else None
+        dialog = Gtk.Dialog(
+            title=self._t("picker_title").format(button=self._t("btn_" + name)),
+            transient_for=self._win,
+            modal=True,
+        )
+        notebook = Gtk.Notebook()
+        functions = self._picker_list_page(
+            [(fid, self._t("fn_" + fid)) for fid in buttons.METHODS],
+            current,
+            dialog,
+            name,
+        )
+        keyboard = self._picker_keyboard_page(current, dialog, name)
+        combos = self._picker_list_page(
+            [(fid, self._t("fn_" + fid)) for fid in buttons.COMBO],
+            current,
+            dialog,
+            name,
+        )
+        macros = self._picker_list_page(
+            [
+                ("macro_%d" % slot, self._t("fn_macro").format(n=slot + 1))
+                for slot in range(buttons.MACRO_SLOTS)
+            ],
+            current,
+            dialog,
+            name,
+        )
+        for page, title in (
+            (functions, self._t("picker_tab_functions")),
+            (keyboard, self._t("picker_tab_keyboard")),
+            (combos, self._t("picker_tab_combos")),
+            (macros, self._t("picker_tab_macros")),
+        ):
+            notebook.append_page(page, Gtk.Label(label=title))
+        dialog.vbox.pack_start(notebook, True, True, 0)
+        dialog.add_button(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL)
+        dialog.set_default_size(360, 420)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def _picker_list_page(self, options, current, dialog, name):
+        """Scrollable list of labelled options; clicking a row picks it."""
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        listbox = Gtk.ListBox()
+        for fid, label in options:
+            row = Gtk.ListBoxRow()
+            row.add(Gtk.Label(label=label, xalign=0))
+            if fid == current:
+                row.set_activatable(False)
+                row.set_selectable(False)
+                row.set_sensitive(False)
+                row.set_tooltip_text(self._t("button_raw").format(hex=""))
+            row._fid = fid  # noqa: SLF001
+            row.connect(
+                "button-release-event",
+                lambda _r, _e, f=fid, d=dialog, n=name: self._picker_pick(f, d, n),
+            )
+            listbox.add(row)
+        scrolled.add(listbox)
+        return scrolled
+
+    def _picker_keyboard_page(self, current, dialog, name):
+        """Keyboard tab: a search entry + a filtered list of keys."""
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        search = Gtk.SearchEntry()
+        search.set_placeholder_text(self._t("picker_search"))
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        listbox = Gtk.ListBox()
+        query = [""]
+
+        def rebuild(*_a):
+            keys = self._filter_keys(query[0])
+            for child in listbox.get_children():
+                listbox.remove(child)
+            for key in keys:
+                row = Gtk.ListBoxRow()
+                row.add(Gtk.Label(label=buttons.KEYBOARD_LABEL[key], xalign=0))
+                if key == current:
+                    row.set_sensitive(False)
+                    row.set_tooltip_text(self._t("button_raw").format(hex=""))
+                row.connect(
+                    "button-release-event",
+                    lambda _r, _e, f=key, d=dialog, n=name: self._picker_pick(f, d, n),
+                )
+                listbox.add(row)
+            listbox.show_all()
+
+        search.connect("search-changed", lambda _e: (query.__setitem__(0, search.get_text()), rebuild()))
+        vbox.pack_start(search, False, False, 0)
+        scrolled.add(listbox)
+        vbox.pack_start(scrolled, True, True, 0)
+        rebuild()
+        return vbox
+
+    @staticmethod
+    def _filter_keys(query):
+        """Keyboard keys matching a case-insensitive substring of the id or
+        its label (pure, headless-testable)."""
+        q = query.strip().lower()
+        if not q:
+            return list(buttons.KEYBOARD)
+        return [
+            key
+            for key in buttons.KEYBOARD
+            if q in key.lower() or q in buttons.KEYBOARD_LABEL[key].lower()
+        ]
+
+    def _picker_pick(self, fid, dialog, name):
+        """A row was clicked in the picker: submit and close."""
+        dialog.response(Gtk.ResponseType.OK)
+        self._on_set_button(name, fid)
+
     def _on_button_changed(self, combo, name):
+        """Legacy ComboBoxText handler (kept for the pre-dialog picker tests);
+        the live picker is `_on_button_pick` / `_picker_pick`."""
         if self._buttons_loading:
             return
         if not combo.get_active() or not self._on_set_button:
@@ -1085,9 +1220,9 @@ class BatteryWindow:
         fid = combo.get_active_id()
         if fid == "__raw__":
             return
-        if fid not in buttons.METHODS:
-            # Decode-only row (BLE left-click variant, gated combos): shows the
-            # current function but is not a writable option.
+        if buttons.function_method(fid) is None:
+            # Decode-only row (BLE left-click variant): shows the current
+            # function but is not a writable option.
             return
         state = self._buttons["buttons"].get(name)
         if state is not None and fid == state["fn"]:
