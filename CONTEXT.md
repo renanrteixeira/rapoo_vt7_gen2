@@ -98,7 +98,7 @@ firmware does **not** respond to it.
   | 0xA5 | write_eeprom | `[len, addr(4B), data...]` |
   | 0xA8 | factory_update | — |
   | 0xAA | **get_battery_level** | — |
-  | 0xAD | return_factory_settings | — |
+  | 0xAD | return_factory_settings | **`[0x52,0x3D,0x00,0x00,0x00]`** — payload OBRIGATÓRIO (DESTRUCTIVE; Ask First). Sem payload responde vazio e não efetiva; com payload ACK + reboot + defaults reais (D3, validado 2026-08-19) |
   | 0xA0 | **enter pairing mode** (receiver) | `[0x81]` — DESTRUCTIVE; Ask First; reply only on feature report (zerada no hidraw) |
   | 0xA1 | **write RF** (receiver) | `[0x8F, rf0..rf3]` — DESTRUCTIVE; Ask First; reply only on feature report |
   | 0xA7 | **get match result** (receiver) | ✅ validated: ACK on input 6, `data[2]`; 0 = **"no match in progress"** (NÃO é falha — validado em 3 runs / ~5 min, persiste em todos os estados); ≠0 = sucesso 🔶 (não reproduzível com 1 mouse já pareado) |
@@ -391,8 +391,21 @@ captured before any write.
       response, nunca 0/matching) e o mouse re-linka no RF antigo — o
       `deviceMatcher` só gera resultado para um mouse genuinamente **não
       pareado** (ou exige unpair ainda não mapeado). Pendências Ask First:
-      factory reset 0xAD; pinar sucesso do pairing precisa de 2º mouse não
-      pareado.
+      factory reset 0xAD — **RESOLVIDO (D3, 2026-08-19, ver abaixo)**;
+      pinar sucesso do pairing precisa de 2º mouse não pareado.
+      **Factory reset VALIDADO on-device (D3, 2026-08-19)**: o wire form real
+      do `0xAD` é **com payload `[0x52,0x3D,0x00,0x00,0x00]`** (A Hub
+      `returnFactory`, chunk lazy `MouseSetting-BKZgmnMI.js`) — um `0xAD` sem
+      payload responde vazio e NÃO efetiva (validado no cabo 0xFF e no
+      wireless 0xA5). Com o payload o mouse ACK (`06 01...`), **reboota**
+      (hidraw 8→9) e restaura os defaults reais de fábrica, que **diferem dos
+      assumidos**: dpi_cur=**5**, sensor table **`[0,0,1,2,3,3,3]`** (NÃO 0 /
+      `[0,0,1,1,3,3,3]`), DPI `[400,800,1200,1600,3200,6400,26000]` enable=6,
+      debounce 8/16, sleep 10 min, scroll fwd/back desabilitados. `system.py`
+      agora envia o payload, **re-abre o device após o reboot** antes de
+      verificar e compara com os `FACTORY_*` corrigidos. **Config do usuário
+      restaurada do baseline** (diff byte-a-byte vazio após a restauração).
+      Suite: 490 OK.
 
 ---
 

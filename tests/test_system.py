@@ -23,7 +23,7 @@ from src.rapoo_vt7.pairing_session import (
 
 def factory_state():
     return {
-        protocol.EEPROM_BANK0_BASE + protocol.MOUSE_DPI_CUR: b"\x00",
+        protocol.EEPROM_BANK0_BASE + protocol.MOUSE_DPI_CUR: b"\x05",
         protocol.EEPROM_BANK0_BASE + protocol.RF_STRENGTHEN_SWITCH: b"\x00",
         protocol.EEPROM_BANK0_BASE + protocol.SENSOR_MODE: bytes(system.FACTORY_SENSOR_MODE),
     }
@@ -79,7 +79,7 @@ class FakeDev:
         return bytes(resp)
 
     def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
-        self.queries.append(cmd_id)
+        self.queries.append((cmd_id, args))
         if cmd_id == protocol.RETURN_FACTORY_SETTINGS:
             self.data = dict(self.factory)
             return ack_reply()
@@ -132,7 +132,7 @@ class RebootDev(FakeDev):
         self.fail_after_reset = 1
 
     def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
-        self.queries.append(cmd_id)
+        self.queries.append((cmd_id, args))
         if cmd_id == protocol.RETURN_FACTORY_SETTINGS:
             self.data = dict(self.factory)
             self.resets += 1
@@ -154,7 +154,7 @@ class BoomDev(FakeDev):
         self.resets = 0
 
     def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
-        self.queries.append(cmd_id)
+        self.queries.append((cmd_id, args))
         if cmd_id == protocol.RETURN_FACTORY_SETTINGS:
             self.data = dict(self.factory)
             self.resets += 1
@@ -242,7 +242,7 @@ class _FakePairingSession:
 
 class FactoryDefaultsTest(unittest.TestCase):
     def test_factory_sensor_mode_is_the_validated_table(self):
-        self.assertEqual(list(system.FACTORY_SENSOR_MODE), [0, 0, 1, 1, 3, 3, 3])
+        self.assertEqual(list(system.FACTORY_SENSOR_MODE), [0, 0, 1, 2, 3, 3, 3])
         self.assertEqual(len(system.FACTORY_SENSOR_MODE), 7)
 
     def test_is_factory_state_matches_defaults(self):
@@ -287,16 +287,19 @@ class ReadVerifyStateTest(unittest.TestCase):
 
 
 class FactoryResetTest(unittest.TestCase):
-    def test_sends_0xad_ack_and_verifies_factory_defaults(self):
+    def test_sends_0xad_payload_ack_and_verifies_factory_defaults(self):
         dev = FakeDev(data=user_state(), factory=factory_state())
         result = system.factory_reset(dev)
-        self.assertEqual(dev.queries, [protocol.RETURN_FACTORY_SETTINGS])
+        self.assertEqual(
+            dev.queries,
+            [(protocol.RETURN_FACTORY_SETTINGS, system.FACTORY_RESET_PAYLOAD)],
+        )
         self.assertEqual(dev.writes, [])
         self.assertTrue(result["acked"])
         self.assertEqual(result["before"], system.read_verify_state(FakeDev(data=user_state())))
         self.assertEqual(
             result["after"],
-            {"dpi_cur": 0, "rf_byte": 0, "sensor_mode": list(system.FACTORY_SENSOR_MODE)},
+            {"dpi_cur": 5, "rf_byte": 0, "sensor_mode": list(system.FACTORY_SENSOR_MODE)},
         )
 
     def test_non_ack_reply_raises_ack_error(self):
@@ -333,7 +336,7 @@ class FactoryResetTest(unittest.TestCase):
         dev = RebootDev(data=user_state(), factory=factory_state())
         result = system.factory_reset(dev, attempts=3, delay=0)
         self.assertTrue(result["acked"])
-        self.assertEqual(result["after"]["dpi_cur"], 0)
+        self.assertEqual(result["after"]["dpi_cur"], 5)
 
     def test_all_post_reset_reads_fail_raises_verify_error(self):
         # The reset was ACKed but the mouse never answered the post-reset
@@ -410,7 +413,10 @@ class ProbeFactoryResetMainTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("ACKED", out.getvalue())
         self.assertIn("AFTER", out.getvalue())
-        self.assertEqual(dev.queries, [protocol.RETURN_FACTORY_SETTINGS])
+        self.assertEqual(
+            dev.queries,
+            [(protocol.RETURN_FACTORY_SETTINGS, system.FACTORY_RESET_PAYLOAD)],
+        )
 
     def test_ack_error_prints_error_and_exits_nonzero(self):
         dev = NoAckDev(data=user_state(), factory=factory_state())

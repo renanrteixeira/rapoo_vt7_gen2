@@ -129,7 +129,7 @@ their method derives from the bundle and needs a write test first.
 ### E. System / firmware — ✅ commands, ⚠️ pairing-success signals (unobservable with a single paired mouse)
 | Item | Mechanism | Notes |
 |---|---|---|
-| Factory reset | `0xAD` `return_factory_settings` | ✅ implemented (`system.py` + "Sistema" tab: confirmation dialog + post-reset verification; command only — never writes EEPROM) |
+| Factory reset | `0xAD` `return_factory_settings` + payload `[0x52,0x3D,0x00,0x00,0x00]` | ✅ implemented (`system.py` + "Sistema" tab: confirmation dialog + post-reset verification; command only — never writes EEPROM). **VALIDATED on device 2026-08-19 (story D3)**: bare `0xAD` answers empty and does nothing; with the payload it ACKs, reboots (hidraw path changes) and restores the real factory defaults — **dpi_cur=5, sensor table `[0,0,1,2,3,3,3]`** (NOT gear 0 / `[0,0,1,1,3,3,3]`), DPI table `[400,800,1200,1600,3200,6400,26000]` enable=6, debounce 8/16, sleep 10 min, scroll fwd/back disabled. `system.FACTORY_*` updated to the validated values; `factory_reset` re-opens the device post-reboot |
 | Firmware update | `0xA8` `factory_update` + download | requires **wired mode**; risky — last phase |
 | Receiver pairing | app flow (`deviceMatcher`) | 3 steps (receiver + wired mouse → disconnect + power-cycle → press L+M+R); **🔶 commands mapped (2026-08-16), VID/PID poll + 0xA7 validated on device (2026-08-17); app flow + `--pair-run` harness implemented (2026-08-18, story 5-4)** — see Phase 5 (command reference + app session); `0xA0`/`0xA1` replies feature-report-only (unreadable on hidraw input 6) |
 | Device name | `0x09EC` | `CONFIG_NAME` `_3(1004)` — **16B string ✅**; reads "CFG1" on device; ✅ read + rename (2026-08-13, `system.py` + "Sistema" tab) |
@@ -272,12 +272,20 @@ recorded here. When resuming, start from the end of the last marked phase.
 
 ### Phase 5 — System
 - [x] Factory reset (`0xAD`) with a confirmation dialog (story 9, CAP-8).
-      **Implemented (2026-08-13)**: `system.py` owns the destructive command
-      + post-reset verification (read the key EEPROM markers → 0xAD ACK →
-      re-read with a reboot retry → confirm the state both changed AND matches
-      the factory defaults `MOUSE_DPI_CUR`=0, RF byte `0x08D8`=0x00 and the
-      validated `SENSOR_MODE` table `[0,0,1,1,3,3,3]`). The "Sistema" window
-      tab has a "Restauração de fábrica" button guarded by an explicit,
+      **Implemented (2026-08-13) + VALIDATED ON DEVICE (2026-08-19, story
+      D3)**: the real command carries the A Hub `returnFactory` payload
+      `[0x52,0x3D,0x00,0x00,0x00]` — a bare `0xAD` is answered with an empty
+      reply and does nothing. With the payload the mouse ACKs, **reboots**
+      (the hidraw path changes) and restores the **real** factory defaults,
+      which differ from the pre-D3 assumptions: active gear = 5 (not 0), the
+      `SENSOR_MODE` table = `[0,0,1,2,3,3,3]` (not `[0,0,1,1,3,3,3]`), DPI
+      table `[400,800,1200,1600,3200,6400,26000]` with enable=6, debounce
+      8/16 ms, sleep 10 min, scroll fwd/back disabled. `system.py` now sends
+      the payload, re-opens the device post-reboot before verifying, and
+      compares against the corrected `FACTORY_*` defaults (the old markers
+      could never have passed a real reset — the pre-D3 `[0,0,1,1,3,3,3]`
+      was a configured user state, not the factory table). The "Sistema"
+      window tab has a "Restauração de fábrica" button guarded by an explicit,
       blocking, localized confirmation dialog; the reset is user-initiated via
       `submit(..., wake=True)` (attempted even while the mouse is asleep) and
       feedback is non-blocking (notification + tab status). It is a command,

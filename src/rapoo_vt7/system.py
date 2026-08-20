@@ -11,23 +11,34 @@ Factory reset is a **command, not an EEPROM write**: it never touches
 must not be gated behind a baseline-exists check. It also never touches the
 baseline file (`~/.cache/rapoo-vt7/eeprom_baseline.json`).
 
-After the `0xAD` ACK the mouse reboots, so the post-reset verification reads
-the key EEPROM fields with a bounded retry (see `RESET_READ_ATTEMPTS`). The
-verification compares three factory-default markers:
+The `0xAD` command carries the A Hub `returnFactory` payload
+`[0x52, 0x3D, 0x00, 0x00, 0x00]` — a bare `0xAD` (no payload) is answered with
+an empty reply and does nothing, as validated on the real device (2026-08-19,
+story D3). With the payload the mouse answers a plain ACK and reboots.
 
-    MOUSE_DPI_CUR       0x0898  active gear index (factory default = gear 0)
+After the `0xAD` ACK the mouse reboots — the hidraw interface changes (the
+boot was observed moving hidraw8 -> hidraw9) — so the post-reset verification
+re-opens the device and reads the key EEPROM fields with a bounded retry (see
+`RESET_READ_ATTEMPTS`). The verification compares three factory-default
+markers:
+
+    MOUSE_DPI_CUR       0x0898  active gear index (factory default = gear 5,
+                                 i.e. 6400 of the reset table — NOT gear 0)
     RF_STRENGTHEN_SWITCH 0x08D8  shared RF byte (factory default = 0x00:
                                  adaptive RF, no low-power warning)
     SENSOR_MODE         0x08DC  the 7-slot performance-mode table, whose
-                                 factory content [0,0,1,1,3,3,3] was VALIDATED
-                                 on the real device (2026-08-11)
+                                 factory content [0,0,1,2,3,3,3] was VALIDATED
+                                 on the real device (2026-08-19, story D3:
+                                 stable readback after the live 0xAD reset;
+                                 the earlier [0,0,1,1,3,3,3] was a configured
+                                 user state, not the factory default)
 
-The DPI-current default (gear index 0) is the natural factory state — the
-first gear of the (reset) DPI table. The two other defaults are
-device-validated. A reset is only reported as verified when the post-reset
-state BOTH differs from the pre-reset state (the command actually changed
-something) AND matches these factory defaults; either condition failing raises
-`FactoryResetVerifyError`.
+The factory defaults were validated by an actual on-device reset: the DPI
+table returns to [400, 800, 1200, 1600, 3200, 6400, 26000] with all 7 gears
+enabled (enable=6) and the active gear 5 selected. A reset is only reported
+as verified when the post-reset state BOTH differs from the pre-reset state
+(the command actually changed something) AND matches these factory defaults;
+either condition failing raises `FactoryResetVerifyError`.
 
 Besides the reset command, this module owns the **device-name primitives**
 (story 5-2): `read_device_name`/`write_device_name` for the 16-byte
@@ -50,12 +61,21 @@ RESET_READ_ATTEMPTS = 5
 RESET_READ_DELAY = 0.4
 
 # Factory defaults the post-reset verification compares against.
-#   dpi_cur: gear index 0 (first gear of the factory DPI table).
+#   dpi_cur: gear index 5 (the active gear of the factory DPI table — the
+#            reset selects 6400, not gear 0). Validated by a live on-device
+#            reset (2026-08-19, story D3).
 #   rf_byte: 0x00 (adaptive RF, low-power warning off) — the device read 0x00.
-#   sensor_mode: the validated factory performance-mode table.
-FACTORY_DPI_CUR = 0
+#   sensor_mode: the factory performance-mode table, validated by a live
+#                on-device reset: [0,0,1,2,3,3,3] (slot 3 = 2, not 1).
+FACTORY_DPI_CUR = 5
 FACTORY_RF_BYTE = 0x00
-FACTORY_SENSOR_MODE = (0, 0, 1, 1, 3, 3, 3)
+FACTORY_SENSOR_MODE = (0, 0, 1, 2, 3, 3, 3)
+
+# The A Hub `returnFactory` payload. A bare 0xAD is answered with an empty
+# reply and does nothing; the real reset frame is
+# [prefix, 0xAD, 0x52, 0x3D, 0x00, 0x00, 0x00] (validated on the device
+# 2026-08-19, story D3: ACK + reboot + factory defaults).
+FACTORY_RESET_PAYLOAD = (0x52, 0x3D, 0x00, 0x00, 0x00)
 
 
 class FactoryResetError(ValueError):
@@ -146,15 +166,19 @@ def _is_factory_state(state):
 def _read_verify_state_after_reset(dev, attempts, delay):
     """Re-reads the verify state with a bounded retry for the reboot.
 
-    When every attempt fails the reset was ACKed but the mouse never answered
-    the post-reset reads (reboot longer than the retry window, or it fell
-    back asleep). Surface that as `FactoryResetVerifyError` — a verification
-    failure — rather than leaking the raw `CommandTimeout`, which the caller
-    would otherwise present as a generic "no response / mouse asleep" error.
+    The mouse reboots after the 0xAD ACK and its hidraw path changes, so
+    each attempt re-opens the device (a fresh scan picks up the new path)
+    before reading. When every attempt fails the reset was ACKed but the
+    mouse never answered the post-reset reads (reboot longer than the retry
+    window, or it fell back asleep). Surface that as `FactoryResetVerifyError`
+    — a verification failure — rather than leaking the raw `CommandTimeout`,
+    which the caller would otherwise present as a generic "no response / mouse
+    asleep" error.
     """
     last = None
     for i in range(attempts):
         try:
+            dev.open()
             return read_verify_state(dev)
         except (CommandTimeout, OSError, ValueError) as exc:
             last = exc
@@ -171,8 +195,10 @@ def factory_reset(dev, attempts=RESET_READ_ATTEMPTS, delay=RESET_READ_DELAY):
 
     Steps:
       1. read the pre-reset verify state (the baseline of the change check),
-      2. send `RETURN_FACTORY_SETTINGS` (0xAD) and require a plain ACK,
-      3. re-read the verify state (retrying while the mouse reboots),
+      2. send `RETURN_FACTORY_SETTINGS` (0xAD) with the A Hub `returnFactory`
+         payload and require a plain ACK,
+      3. re-open the device (the mouse reboots; its hidraw path changes) and
+         re-read the verify state (retrying while the mouse reboots),
       4. verify it changed AND matches the factory defaults.
 
     Returns {"before", "after", "acked": True}. Raises FactoryResetAckError
@@ -181,7 +207,11 @@ def factory_reset(dev, attempts=RESET_READ_ATTEMPTS, delay=RESET_READ_DELAY):
     fields are not at the factory defaults). No EEPROM is written.
     """
     before = read_verify_state(dev)
-    resp = dev.query(protocol.RETURN_FACTORY_SETTINGS, timeout=1.0)
+    resp = dev.query(
+        protocol.RETURN_FACTORY_SETTINGS,
+        args=FACTORY_RESET_PAYLOAD,
+        timeout=1.0,
+    )
     if resp is None or len(resp) < 2 or resp[1] != protocol.RESP_ACK:
         raise FactoryResetAckError("factory reset reply was not an ACK")
     after = _read_verify_state_after_reset(dev, attempts, delay)
