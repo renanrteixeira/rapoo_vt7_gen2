@@ -456,7 +456,13 @@ captured before any write.
   (`quiet`, 60 s) without sending commands — moving the mouse makes it send
   report 7 itself and the app wakes up. Result: with report 7 active, ~0 extra
   commands.
-- [P3] Validate the "charging" display (status=2) when the mouse is on the cable.
+- [x] [P3] Charging display VALIDATED on device (2026-08-21): with the mouse
+      on the cable both channels agree — `0xAA` reply `06 01 02 54`
+      (status=2, 84%) and passive report 7 `07 12 .. 88 13 88 13 02 54`
+      (`data[1]` low nibble 2 = USB, `data[7]`=2 charging, `data[8]`=84).
+      Bolt icon + "Carregando" rendering confirmed. Note: on cable the
+      firmware sends report 7 only on state change/movement (not while
+      idle) — the 30 s 0xAA fallback covers the idle case.
 - [P6] **Both connections supported**: 2.4G receiver (0x1413, prefix 0xA5) and USB
   cable (0x4613, prefix 0xFF). `device.py` prefers the USB cable and switches on
   timeout (hot swap). udev rule updated to `1413|4613` (run
