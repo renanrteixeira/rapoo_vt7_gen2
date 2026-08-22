@@ -6,7 +6,7 @@ import select
 import struct
 import time
 
-from . import i18n, protocol
+from . import i18n, protocol, settings
 
 
 class DeviceNotFound(Exception):
@@ -21,6 +21,15 @@ class CommandTimeout(Exception):
     pass
 
 
+class BaselineMissingError(Exception):
+    """The golden rule refused an EEPROM write: no baseline file exists.
+
+    `tools/probe.py --dump` creates the baseline. The app never writes
+    without it; diagnostic tools opt out via `RapooDevice(require_baseline=
+    False)` and manage their own restore logic.
+    """
+
+
 def _ioctl_const(direction, type_char, nr, size):
     return (direction << 30) | (ord(type_char) << 8) | (nr << 0) | (size << 16)
 
@@ -30,12 +39,15 @@ _HIDIOCGRDESC = _ioctl_const(2, "H", 2, 4 + 4096)
 
 
 class RapooDevice:
-    def __init__(self):
+    def __init__(self, require_baseline=True):
         self._fd = None
         self._path = None
         self._candidates = []
         self._active = -1
         self._prefix = protocol.PREFIX_WIRELESS
+        # Golden rule: the app refuses EEPROM writes until a restorable
+        # baseline exists. Diagnostic tools opt out explicitly.
+        self._require_baseline = require_baseline
 
     @staticmethod
     def _hidraw_list():
@@ -264,7 +276,17 @@ class RapooDevice:
         )
         return resp
 
+    def _ensure_baseline(self):
+        """Golden-rule gate: no EEPROM write without a restorable baseline.
+
+        Runs before any validation that could still precede I/O, so a refused
+        write never reaches the wire.
+        """
+        if self._require_baseline and not settings.baseline_exists():
+            raise BaselineMissingError(i18n.tr("baseline_missing"))
+
     def write_eeprom(self, addr, data):
+        self._ensure_baseline()
         if len(addr) != 2:
             raise ValueError("write_eeprom: addr must be 2 bytes")
         if len(data) == 0:

@@ -7,13 +7,23 @@ with the 2-byte LE address derived from the bank-0 offsets in protocol.py.
 
 import os
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
+from typing import Optional, Tuple
 
 from . import protocol
 
 EEPROM_BASELINE_PATH = os.path.expanduser(
     "~/.cache/rapoo-vt7/eeprom_baseline.json"
 )
+
+
+def baseline_exists(path=None):
+    """True when the EEPROM baseline file exists (golden-rule precondition).
+
+    The golden rule: no EEPROM write before a restorable baseline exists
+    (`tools/probe.py --dump` creates it). Diagnostic tools that manage their
+    own restore logic opt out explicitly; the app never does.
+    """
+    return os.path.exists(path or EEPROM_BASELINE_PATH)
 
 FIELD_TYPES = ("uint", "bool", "string")
 
@@ -24,21 +34,30 @@ class Field:
     size: int = 1
     type: str = "uint"
     range: Optional[Tuple[int, int]] = None
-    validator: Optional[Callable[[int], bool]] = None
 
     def encode(self, value):
         """Encodes `value` into `size` bytes (little-endian).
 
-        - uint/bool: range and validator -> ValueError; value must fit size.
-        - string: utf-8, padded with NUL or truncated to `size` bytes.
+        - uint/bool: range -> ValueError; value must fit size.
+        - string: UTF-8, NUL-padded to exactly `size` bytes; oversize input
+          and embedded NUL bytes are REJECTED with ValueError (policy aligned
+          with `system.encode_name` — silent truncation could split a
+          multi-byte char or drop the terminator, corrupting the field).
         """
         if self.type not in FIELD_TYPES:
             raise ValueError("unknown field type {!r}".format(self.type))
         if self.type == "string":
-            raw = str(value).encode("utf-8")
-            if len(raw) >= self.size:
-                return raw[: self.size].decode("utf-8", errors="ignore").encode(
-                    "utf-8"
+            try:
+                raw = str(value).encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError(
+                    "string value cannot be encoded as UTF-8"
+                ) from None
+            if b"\x00" in raw:
+                raise ValueError("string value contains a NUL byte")
+            if len(raw) > self.size:
+                raise ValueError(
+                    "string value exceeds {} bytes".format(self.size)
                 )
             return raw + b"\x00" * (self.size - len(raw))
         if self.type == "bool":
@@ -52,10 +71,6 @@ class Field:
         if self.range is not None and not (self.range[0] <= value <= self.range[1]):
             raise ValueError(
                 "value {!r} out of range {}".format(value, self.range)
-            )
-        if self.validator is not None and not self.validator(value):
-            raise ValueError(
-                "value {!r} rejected by field validator".format(value)
             )
         return value.to_bytes(self.size, "little")
 
@@ -83,9 +98,16 @@ FIELDS = {
     "dpi_current": Field(_addr(protocol.MOUSE_DPI_CUR)),
     "dpi_enable_gear": Field(_addr(protocol.MOUSE_DPI_ENABLE_GEAR)),
     # B. Performance / sensor
+    # sensor_mode is the SLOT-0 VIEW of the 7-slot mode table 0x08DC..0x08E2
+    # (one byte per polling-rate slot; the active slot is owned by
+    # performance.read_mode/set_mode — a bare dump of this field shows slot 0,
+    # not the active mode).
     "sensor_mode": Field(_addr(protocol.SENSOR_MODE)),
     "mouse_report": Field(_addr(protocol.MOUSE_REPORT)),
     "mouse_scan": Field(_addr(protocol.MOUSE_SCAN)),
+    # mouse_slight (0x0884) is the SAME BYTE as the lift_off slider of §C
+    # (parameters.PARAMS "lift_off", byte 1..11 <-> 1.0..2.0 mm). This entry
+    # exists for the raw dump; the semantic owner is parameters.py.
     "mouse_slight": Field(_addr(protocol.MOUSE_SLIGHT)),
     "mouse_motion": Field(_addr(protocol.MOUSE_MOTION)),
     # RF strategy and low-power warning SHARE one EEPROM byte at 0x08D8
@@ -121,4 +143,24 @@ FIELDS = {
     "mouse_ble": Field(_addr(protocol.MOUSE_BLE), size=4),
     # E. System
     "config_name": Field(_addr(protocol.CONFIG_NAME), size=16, type="string"),
+}
+
+# Cross-module alias map (retro epic-1 F7 reconciliation): the §C parameters
+# are registered ONCE here under their dump names; parameters.PARAMS re-expresses
+# each address under its user-facing name (and buttons.BUTTONS does the same for
+# the D-section button fields). These tables must never drift apart —
+# tests/test_settings.py::RegistryDriftGuardTest fails when either side changes
+# an address without updating the other.
+PARAM_FIELD_ALIASES = {
+    "motion_sync": "mouse_motion",
+    "glass_track": "mouse_glass",
+    "dc_switch": "mouse_dcswitch",
+    "linear_ripple": "mouse_linear_ripple",
+    "sensor_angle": "mouse_sensorangle",
+    "press_debounce": "mouse_downdelay",
+    "release_debounce": "mouse_liftdelay",
+    "sleep_time": "mouse_sleeptime",
+    "lift_off": "mouse_slight",
+    "low_power": "mouse_lowpower",
+    "power_save": "mouse_powersave",
 }

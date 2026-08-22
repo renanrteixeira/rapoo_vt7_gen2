@@ -1,6 +1,8 @@
 import unittest
+from unittest import mock
 
 from src.rapoo_vt7 import buttons, gui, i18n, parameters as par
+from src.rapoo_vt7 import performance as perf
 
 
 def t(key, **kw):
@@ -418,6 +420,496 @@ class PairingRenderPlanTest(unittest.TestCase):
         self.assertEqual(
             gui.pairing_render_plan(None, None), (0, "pairing_matching", False)
         )
+
+
+class _W:
+    """Headless Gtk widget stand-in: records the last value per setter."""
+
+    def __init__(self, value=0.0, active=False, text=""):
+        self.value = value
+        self.active = active
+        self.text = text
+        self.sensitive = True
+        self.tooltip = None
+        self.label = None
+
+    def get_value(self):
+        return self.value
+
+    def set_value(self, v):
+        self.value = v
+
+    def get_active(self):
+        return self.active
+
+    def set_active(self, v):
+        self.active = v
+
+    def set_sensitive(self, v):
+        self.sensitive = v
+
+    def get_text(self):
+        return self.text
+
+    def set_text(self, t):
+        self.text = t
+
+    def set_markup(self, m):
+        self.text = m
+
+    def set_tooltip_text(self, t):
+        self.tooltip = t
+
+    def set_label(self, l):
+        self.label = l
+
+    def set_placeholder_text(self, t):
+        self.placeholder = t
+
+    def get_active_id(self):
+        return self.active_id
+
+    def show_all(self):
+        pass
+
+    def set_title(self, t):
+        self.title = t
+
+
+def _en(key, **kw):
+    return i18n.tr(key, lang="en", **kw)
+
+
+class FilterKeysTest(unittest.TestCase):
+    """`_filter_keys` (pure): the keyboard tab search of the picker dialog."""
+
+    def test_empty_query_returns_every_key_in_order(self):
+        self.assertEqual(gui.BatteryWindow._filter_keys(""), list(buttons.KEYBOARD))
+        self.assertEqual(gui.BatteryWindow._filter_keys("  "), list(buttons.KEYBOARD))
+
+    def test_matches_id_substring_case_insensitive(self):
+        out = gui.BatteryWindow._filter_keys("ESC")
+        self.assertIn("kb_esc", out)
+        self.assertNotIn("kb_a", out)
+
+    def test_matches_label_substring(self):
+        # "Space" is in the label of kb_space but not its id.
+        label_hits = [k for k in buttons.KEYBOARD if "space" in buttons.KEYBOARD_LABEL[k].lower()]
+        if label_hits:
+            self.assertIn(label_hits[0], gui.BatteryWindow._filter_keys("space"))
+
+    def test_no_match_returns_empty(self):
+        self.assertEqual(gui.BatteryWindow._filter_keys("zzzz"), [])
+
+
+class PickerPickTest(unittest.TestCase):
+    """Retro epic-4 F3: headless coverage of `_picker_pick` — a picker row
+    click closes the dialog with OK and submits the function."""
+
+    def test_pick_responds_ok_and_submits(self):
+        calls = []
+        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
+        window._on_set_button = lambda name, fid: calls.append((name, fid))
+        dialog = _W()
+        dialog.responses = []
+        dialog.response = lambda r: dialog.responses.append(r)
+        window._picker_pick("kb_a", dialog, "mouse_right")
+        self.assertEqual(dialog.responses, [gui.Gtk.ResponseType.OK])
+        self.assertEqual(calls, [("mouse_right", "kb_a")])
+
+
+class ParamScaleCoalesceTest(unittest.TestCase):
+    """Retro epic-3 F3: a slider drag coalesces into ONE write (the declared
+    AC had zero tests)."""
+
+    def _window(self):
+        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
+        window._lang = "en"
+        window._perf_loading = False
+        window._param_timers = {}
+        window._submitted = []
+        window._on_set_param_choice = (
+            lambda name, value: window._submitted.append((name, value))
+        )
+        return window
+
+    def test_drag_snap_and_single_flush_write(self):
+        window = self._window()
+        scale = _W(value=5.3)  # press_debounce: lo=0 step=2 -> snaps to 6
+        with mock.patch.object(gui.GLib, "timeout_add", return_value=7) as mt:
+            window._on_param_scale(scale, "press_debounce")
+        self.assertEqual(mt.call_args[0][0], 150)
+        cb, name, value = mt.call_args[0][1:4]
+        self.assertEqual((name, value), ("press_debounce", 6))
+        self.assertEqual(window._submitted, [])  # nothing written yet
+        self.assertTrue(cb(name, value) is False)  # GTK timer: stop the source
+        self.assertEqual(window._submitted, [("press_debounce", 6)])
+        self.assertNotIn("press_debounce", window._param_timers)
+
+    def test_second_drag_cancels_pending_timer(self):
+        window = self._window()
+        with mock.patch.object(
+            gui.GLib, "timeout_add", return_value=7
+        ), mock.patch.object(gui.GLib, "source_remove") as mr:
+            window._on_param_scale(_W(value=4.0), "press_debounce")
+            window._on_param_scale(_W(value=10.9), "press_debounce")  # snaps to 10
+            mr.assert_called_once_with(7)  # the first drag's timer was cancelled
+        # Flush the surviving (second) timer: exactly one submit, latest value.
+        with mock.patch.object(gui.GLib, "timeout_add", return_value=8) as mt2:
+            window._on_param_scale(_W(value=10.9), "press_debounce")
+        cb, name, value = mt2.call_args[0][1:4]
+        self.assertEqual((name, value), ("press_debounce", 10))
+        self.assertTrue(cb(name, value) is False)
+        self.assertEqual(window._submitted, [("press_debounce", 10)])
+
+    def test_flush_skips_while_loading_or_without_callback(self):
+        window = self._window()
+        window._perf_loading = True
+        window._on_param_scale_flush("press_debounce", 6)
+        self.assertEqual(window._submitted, [])
+        window._perf_loading = False
+        window._on_set_param_choice = None
+        self.assertFalse(window._on_param_scale_flush("press_debounce", 6))
+
+
+class RfDoubleSubmitTest(unittest.TestCase):
+    """Retro epic-3 F3: regression guard for the RF radio double-submit fix —
+    a radio group fires `toggled` on BOTH radios; only the newly active one
+    may submit."""
+
+    def _window(self, on_active=True):
+        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
+        window._lang = "en"
+        window._perf_loading = False
+        window._rf_calls = []
+        window._on_set_rf = lambda kind, flag: window._rf_calls.append((kind, flag))
+        window._rf_radio = (_W(active=False), _W(active=True))
+        return window
+
+    def test_only_newly_active_radio_submits(self):
+        window = self._window()
+        window._on_rf_toggled(window._rf_radio[1])  # turning ON
+        self.assertEqual(window._rf_calls, [("rf", True)])
+        window._on_rf_toggled(window._rf_radio[0])  # the turning-off radio
+        self.assertEqual(window._rf_calls, [("rf", True)])  # unchanged
+
+    def test_lowpow_checkbox_submits_state(self):
+        window = self._window()
+        box = _W(active=True)
+        window._on_rf_low_toggled(box)
+        self.assertEqual(window._rf_calls, [("lowpow", True)])
+
+    def test_loading_guard_blocks_submission(self):
+        window = self._window()
+        window._perf_loading = True
+        window._on_rf_toggled(window._rf_radio[1])
+        window._on_rf_low_toggled(_W(active=True))
+        self.assertEqual(window._rf_calls, [])
+
+
+class SelectableModesSensitivityTest(unittest.TestCase):
+    """Retro epic-3 F3: GUI-side `selectable_modes` sensitivity — at slot 3
+    only modes {1,2,3,4,5} are clickable; mode 0's radio renders disabled."""
+
+    def _window(self, perf_info=None, perf_error=None):
+        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
+        window._lang = "en"
+        window._t = _en
+        window._perf = perf_info
+        window._perf_error = perf_error
+        window._params = clean_info()
+        window._params_error = None
+        info = window._params["params"]
+        window._perf_status = _W()
+        window._rf_status = _W()
+        window._param_status = _W()
+        window._perf_radio = [_W() for _ in range(perf.PERF_MODE_COUNT)]
+        window._rate_radio = [_W() for _ in range(len(perf.RATE_HZ))]
+        window._rf_radio = [_W(), _W()]
+        window._rf_lowpow = _W()
+        # Widget maps mirroring clean_info(): toggles for editable params,
+        # (label, value) pairs for the read-only rows.
+        window._param_check = {
+            name: _W() for name, p in info.items() if p["editable"]
+        }
+        window._param_state = {
+            name: (_W(), _W()) for name, p in info.items() if not p["editable"]
+        }
+        window._perf_box = _W()
+        window._param_box = _W()
+        return window
+
+    def test_slot3_disables_unselectable_modes(self):
+        window = self._window({"slot": 3, "mode": 2, "rf": {"rf_strengthen_switch": False, "low_power_warn_switch": True}})
+        window._render_perf()
+        selectable = set(perf.selectable_modes(3))
+        for i, radio in enumerate(window._perf_radio):
+            self.assertEqual(radio.sensitive, i in selectable, "mode %d" % i)
+        self.assertFalse(window._perf_radio[0].sensitive)
+
+    def test_tab_error_disables_every_mode_radio(self):
+        window = self._window({"slot": 3, "mode": 2}, perf_error="boom")
+        window._render_perf()
+        self.assertTrue(all(not r.sensitive for r in window._perf_radio))
+        self.assertTrue(all(not r.sensitive for r in window._rate_radio))
+
+    def test_rate_radios_follow_reported_slot(self):
+        window = self._window({"slot": 5, "mode": 3, "rf": {"rf_strengthen_switch": True, "low_power_warn_switch": False}})
+        window._render_perf()
+        marked = [i for i, r in enumerate(window._rate_radio) if r.active]
+        self.assertEqual(marked, [5])
+        self.assertTrue(all(r.sensitive for r in window._rate_radio))
+
+
+class RelabelPerfWidgetsTest(unittest.TestCase):
+    """Retro epic-3 F3: language change re-translates the perf/rate/RF/§C
+    widgets (the exact gap the applied 3-1 patch flagged)."""
+
+    def _window(self, lang="pt_BR"):
+        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
+        window._lang = lang
+        window._t = lambda key, **kw: i18n.tr(key, lang=window._lang, **kw)
+        window._win = _W()
+        window._lang_label = _W()
+        for attr in ("_tab_battery", "_tab_dpi", "_tab_perf", "_tab_params", "_tab_buttons", "_tab_system"):
+            setattr(window, attr, _W())
+        window._dpi_title = _W()
+        window._dpi_add_btn = _W()
+        window._perf_title = _W()
+        window._rf_title = _W()
+        window._rate_title = _W()
+        window._rate_radio = [_W() for _ in range(len(perf.RATE_HZ))]
+        window._perf_radio = [_W() for _ in range(perf.PERF_MODE_COUNT)]
+        window._rf_radio = [_W(), _W()]
+        window._rf_lowpow = _W()
+        window._param_title = _W()
+        window._buttons_title = _W()
+        window._system_button = _W()
+        window._system_hint = _W()
+        window._name_title = _W()
+        window._name_entry = _W()
+        window._name_button = _W()
+        window._pair_title = _W()
+        window._pair_hint = _W()
+        window._pair_button = _W()
+        window._pair_cancel = _W()
+        window._pair_steps = [_W() for _ in range(3)]
+        window._pair_last_status = None
+        window._pair_busy = False
+        window._pair_status = _W()
+        window._param_check = {}
+        window._param_state = {}
+        window._param_readonly = set()
+        window.renders = []
+        window._rebuild_buttons = lambda: window.renders.append("buttons")
+        window._render = lambda: window.renders.append("battery")
+        window._render_dpi_widgets = lambda: window.renders.append("dpi")
+        window._render_perf = lambda: window.renders.append("perf")
+        window.lang_changes = []
+        window._on_lang_change = lambda code: window.lang_changes.append(code)
+        return window
+
+    def test_switch_to_en_relables_perf_rate_rf_and_params(self):
+        window = self._window(lang="pt_BR")
+        combo = _W()
+        combo.active_id = "en"
+        window._on_lang_changed(combo)
+        self.assertEqual(
+            [r.label for r in window._rate_radio],
+            ["%d Hz" % hz for hz in perf.RATE_HZ],
+        )
+        self.assertEqual(
+            [r.label for r in window._perf_radio],
+            [_en("perf_mode_%d" % i) for i in range(perf.PERF_MODE_COUNT)],
+        )
+        self.assertEqual(window._rf_radio[0].label, _en("rf_radio_adaptive"))
+        self.assertEqual(window._rf_radio[1].label, _en("rf_radio_full"))
+        self.assertEqual(window._rf_lowpow.label, _en("rf_low_toggle"))
+        self.assertIn("Performance", window._perf_title.text.replace("<b>", "").replace("</b>", ""))
+        self.assertEqual(window.lang_changes, ["en"])
+        self.assertEqual(window.renders, ["buttons", "battery", "dpi", "perf"])
+
+    def test_pt_br_labels_differ_from_en(self):
+        window = self._window(lang="en")
+        combo = _W()
+        combo.active_id = "pt_BR"
+        window._on_lang_changed(combo)
+        self.assertEqual(window._perf_radio[0].label, i18n.tr("perf_mode_0", lang="pt_BR"))
+        self.assertNotEqual(
+            window._perf_radio[0].label, _en("perf_mode_0")
+        )
+
+
+def _dpi_info(gear=1, enable=2):
+    return {
+        "gear": gear,
+        "enable": enable,
+        "x": [800, 1200, 5000, 1600, 3200, 6400, 26000],
+        "y": [800, 1200, 5000, 1600, 3200, 6400, 26000],
+    }
+
+
+class DpiRenderPlanTest(unittest.TestCase):
+    """Retro epic-2 F3: pure plan for the DPI tab — AC1's rendered status
+    (gear value / number / cycle count) is asserted here for the first time."""
+
+    def test_ac1_status_args(self):
+        status = gui.dpi_render_plan(_dpi_info(), None)["status"]
+        self.assertEqual(status, ("current", 1200, 2, gui.dpi.GEAR_LENGTH, 3))
+
+    def test_unknown_and_error_status(self):
+        self.assertEqual(gui.dpi_render_plan(None, None)["status"], ("unknown", None))
+        self.assertEqual(gui.dpi_render_plan(None, "boom")["status"], ("error", "boom"))
+
+    def test_rows_mark_only_the_current_slot(self):
+        rows = gui.dpi_render_plan(_dpi_info(), None)["rows"]
+        self.assertEqual([r["slot"] for r in rows], [0, 1, 2])
+        self.assertEqual([r["value"] for r in rows], [800, 1200, 5000])
+        self.assertEqual([r["current"] for r in rows], [False, True, False])
+
+    def test_can_add_boundary(self):
+        self.assertTrue(gui.dpi_render_plan(_dpi_info(enable=5), None)["can_add"])
+        full = gui.dpi_render_plan(_dpi_info(enable=6), None)
+        self.assertFalse(full["can_add"])
+        self.assertEqual(len(full["rows"]), 7)
+
+    def test_out_of_range_gear_degrades_to_unknown(self):
+        plan = gui.dpi_render_plan(_dpi_info(gear=9), None)
+        self.assertEqual(plan["status"], ("unknown", None))
+        self.assertEqual([r["current"] for r in plan["rows"]], [False] * 3)
+
+
+class _DpiWindowMixin:
+    def _window(self):
+        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
+        window._lang = "en"
+        window._dpi_loading = False
+        window._dpi = _dpi_info()
+        window._dpi_error = None
+        window._dpi_busy = False
+        window._dpi_generation = 0
+        window._dpi_timers = {}
+        window._dpi_msg = _W()
+        window._dpi_add_btn = _W()
+        window._dpi_radio = [_W(active=False), _W(active=True), _W(active=False)]
+        window._dpi_spin = [_W(), _W(), _W()]
+        window._dpi_del = [_W(), _W(), _W()]
+        window.calls = []
+        window._cb_add_gear = lambda: window.calls.append("add")
+        window._cb_delete_gear = lambda g: window.calls.append(("delete", g))
+        window._on_switch_gear = lambda g: window.calls.append(("switch", g))
+        window._on_set_value = lambda g, v: window.calls.append(("set", g, v))
+        return window
+
+
+class DpiBusyGuardTest(_DpiWindowMixin, unittest.TestCase):
+    """Retro epic-2 F6: user DPI actions are mutually exclusive — a click
+    sets the busy guard and disables every action until the completion
+    (update_dpi/set_dpi_error) clears it (mirrors the System-tab guard)."""
+
+    def test_add_click_disables_everything_until_completion(self):
+        w = self._window()
+        w._on_add_gear(None)
+        self.assertEqual(w.calls, ["add"])
+        self.assertTrue(w._dpi_busy)
+        self.assertFalse(w._dpi_add_btn.sensitive)
+        self.assertFalse(any(r.sensitive for r in w._dpi_radio))
+        self.assertFalse(any(s.sensitive for s in w._dpi_spin))
+        self.assertFalse(any(d.sensitive for d in w._dpi_del))
+
+    def test_second_click_while_busy_is_ignored(self):
+        w = self._window()
+        w._on_add_gear(None)
+        w._on_delete_gear(None, 0)
+        self.assertEqual(w.calls, ["add"])
+
+    def test_delete_and_switch_set_the_guard_with_payload(self):
+        w = self._window()
+        w._on_delete_gear(None, 2)
+        self.assertEqual(w.calls, [("delete", 2)])
+        self.assertTrue(w._dpi_busy)
+        radio = _W(active=True)
+        w2 = self._window()
+        w2._on_switcher_toggled(radio, 2)
+        self.assertEqual(w2.calls, [("switch", 2)])
+        self.assertTrue(w2._dpi_busy)
+
+    def test_spin_edit_sets_the_guard_on_fire(self):
+        w = self._window()
+        w._dpi_spin[0].value = 900.0
+        w._emit_value(0)
+        self.assertEqual(w.calls, [("set", 0, 900)])
+        self.assertTrue(w._dpi_busy)
+
+    def test_completion_paths_clear_the_guard(self):
+        w = self._window()
+        w._on_add_gear(None)
+        with mock.patch.object(gui.BatteryWindow, "_render_dpi_widgets"):
+            w.update_dpi(_dpi_info())
+        self.assertFalse(w._dpi_busy)
+        w2 = self._window()
+        w2._on_add_gear(None)
+        with mock.patch.object(gui.BatteryWindow, "_render_dpi_widgets"):
+            w2.set_dpi_error("boom")
+        self.assertFalse(w2._dpi_busy)
+
+
+class DpiStalenessTest(_DpiWindowMixin, unittest.TestCase):
+    """Retro epic-2 F2: add/delete invalidate pending spin-edit timers — a
+    stale edit must never write `set_value` through a compacted slot."""
+
+    def _arm(self, w, gear, value):
+        spin = _W(value=value)
+        with mock.patch.object(gui.GLib, "timeout_add", return_value=42) as mt:
+            w._on_spin_changed(spin, gear)
+        cb, g, generation = mt.call_args[0][1:4]
+        self.assertEqual(g, gear)
+        return cb, generation
+
+    def test_armed_edit_captures_generation_and_waits(self):
+        w = self._window()
+        cb, generation = self._arm(w, 0, 900)
+        self.assertEqual(w._dpi_timers[0], 42)
+        self.assertEqual(w.calls, [])  # nothing written before the timer fires
+
+    def test_uninvalidated_edit_fires_and_submits_once(self):
+        w = self._window()
+        w._dpi_spin[0].value = 900.0
+        cb, generation = self._arm(w, 0, 900)
+        self.assertTrue(cb(0, generation) is False)
+        self.assertEqual(w.calls, [("set", 0, 900)])
+        self.assertNotIn(0, w._dpi_timers)
+
+    def _invalidate_case(self, action):
+        w = self._window()
+        cb, generation = self._arm(w, 0, 900)
+        with mock.patch.object(gui.GLib, "source_remove") as mr:
+            if action == "delete":
+                w._on_delete_gear(None, 2)
+            else:
+                w._on_add_gear(None)
+        mr.assert_called_once_with(42)  # the armed timer was cancelled...
+        self.assertNotIn(0, w._dpi_timers)
+        # ...and even if the stale callback fires anyway (race), the
+        # generation mismatch discards it without submitting.
+        self.assertTrue(cb(0, generation) is False)
+        return w
+
+    def test_delete_invalidates_pending_edit(self):
+        w = self._invalidate_case("delete")
+        self.assertEqual(w.calls, [("delete", 2)])
+
+    def test_add_invalidates_pending_edit(self):
+        w = self._invalidate_case("add")
+        self.assertEqual(w.calls, ["add"])
+
+    def test_rebuild_bumps_generation_too(self):
+        w = self._window()
+        gen_before = w._dpi_generation
+        with mock.patch.object(gui.BatteryWindow, "_render_dpi_widgets"):
+            w._rebuild_dpi()
+        self.assertGreater(w._dpi_generation, gen_before)
+        self.assertEqual(w._dpi_timers, {})
 
 
 if __name__ == "__main__":

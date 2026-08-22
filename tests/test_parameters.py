@@ -434,5 +434,42 @@ class MainParamTest(unittest.TestCase):
         self.assertIn(main.LANGS["pt_BR"]["param_on"], shown[0])
 
 
+class MaybeRefreshParamsTest(unittest.TestCase):
+    """Retro epic-3 F3: recovery of an empty §C tab (mouse asleep at startup)
+    or a section still carrying per-field errors — mirrors the perf sibling
+    `_maybe_refresh_perf`."""
+
+    def _app(self, info):
+        from types import SimpleNamespace
+
+        app = main.RapooApp.__new__(main.RapooApp)
+        app._monitor = FakeMonitor()
+        app._window = SimpleNamespace(get_params_info=lambda: info)
+        return app
+
+    def test_retries_when_section_empty(self):
+        refreshed = []
+        app = self._app(None)
+        app._refresh_params = lambda: refreshed.append(1)
+        app._maybe_refresh_params()
+        self.assertEqual(refreshed, [1])
+
+    def test_retries_on_field_errors(self):
+        refreshed = []
+        info = {"params": {}, "errors": {"glass_track": "boom"}}
+        app = self._app(info)
+        app._refresh_params = lambda: refreshed.append(1)
+        app._maybe_refresh_params()
+        self.assertEqual(refreshed, [1])
+
+    def test_skips_when_healthy(self):
+        refreshed = []
+        info = {"params": {}, "errors": {}}
+        app = self._app(info)
+        app._refresh_params = lambda: refreshed.append(1)
+        app._maybe_refresh_params()
+        self.assertEqual(refreshed, [])
+
+
 if __name__ == "__main__":
     unittest.main()

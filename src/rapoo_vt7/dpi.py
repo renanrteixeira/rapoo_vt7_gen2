@@ -11,7 +11,7 @@ button cycles only slots 0..1). "Disabling" a DPI means removing it from the
 compact list, exactly like the official A Hub setDeviceGears()/delete.
 """
 
-from . import protocol, settings
+from . import eeprom, protocol, settings
 
 GEAR_LENGTH = protocol.MOUSE_DPI_GEAR_LENGTH  # 7
 DPI_MIN = 50
@@ -21,28 +21,17 @@ ADD_DEFAULT = 800  # value appended by add_gear() when none is given
 
 
 def _addr_at(offset, item):
-    return tuple(protocol.eeprom_bank0(offset + 2 * item))
+    return eeprom.bank0(offset + 2 * item)
 
 
 def _read_field(dev, field):
-    resp = dev.read_eeprom(field.addr, field.size)
-    if len(resp) < protocol.EEPROM_DATA_OFFSET + field.size:
-        raise ValueError("short EEPROM reply for field")
-    raw = bytes(
-        resp[protocol.EEPROM_DATA_OFFSET : protocol.EEPROM_DATA_OFFSET + field.size]
-    )
-    return field.decode(raw)
+    return field.decode(eeprom.read_bytes(dev, field.addr, field.size))
 
 
 def _read_list(dev, offset):
     out = []
     for i in range(GEAR_LENGTH):
-        resp = dev.read_eeprom(_addr_at(offset, i), 2)
-        if len(resp) < protocol.EEPROM_DATA_OFFSET + 2:
-            raise ValueError("short EEPROM reply for DPI list item %d" % i)
-        raw = bytes(
-            resp[protocol.EEPROM_DATA_OFFSET : protocol.EEPROM_DATA_OFFSET + 2]
-        )
+        raw = eeprom.read_bytes(dev, _addr_at(offset, i), 2)
         out.append(raw[0] | (raw[1] << 8))
     return out
 
@@ -58,13 +47,21 @@ def _validate_dpi(value):
 
 def read_dpi(dev):
     """Reads the current gear + enable byte and the X/Y tables (7 values
-    each, 2-byte LE) and returns {'gear', 'enable', 'x': [7], 'y': [7]}."""
-    return {
+    each, 2-byte LE) and returns {'gear', 'enable', 'x': [7], 'y': [7]}.
+
+    The device-provided gear byte is clamped into the active cycle
+    (0..active_count(enable)-1): a garbage byte from the device must never
+    crash the consumers that index the X/Y tables with it."""
+    info = {
         "gear": _read_field(dev, settings.FIELDS["dpi_current"]),
         "enable": _read_field(dev, settings.FIELDS["dpi_enable_gear"]),
         "x": _read_list(dev, protocol.MOUSE_DPI_X_LIST),
         "y": _read_list(dev, protocol.MOUSE_DPI_Y_LIST),
     }
+    info["gear"] = min(
+        max(int(info["gear"]), 0), active_count(info["enable"]) - 1
+    )
+    return info
 
 
 def active_count(enable):

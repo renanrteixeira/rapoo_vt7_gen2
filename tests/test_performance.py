@@ -96,13 +96,21 @@ class RateIndexTest(unittest.TestCase):
         self.assertEqual(perf.rate_index_from_code(130), 5)  # 4000 Hz
         self.assertEqual(perf.rate_index_from_code(129), 6)  # 8000 Hz
 
-    def test_accepts_raw_index(self):
-        self.assertEqual(perf.rate_index_from_code(0), 0)
-        self.assertEqual(perf.rate_index_from_code(6), 6)
+    def test_zero_and_raw_indexes_fall_back_to_1000hz(self):
+        # Retro epic-3 decision: the wire carries rate CODES only; 0 and raw
+        # slot indexes are not codes -> default (the old passthrough misread
+        # rpt_usb=0 as the 125 Hz slot).
+        self.assertEqual(perf.rate_index_from_code(0), perf.SLOT_DEFAULT)
+        self.assertEqual(perf.rate_index_from_code(3), perf.SLOT_DEFAULT)
+        self.assertEqual(perf.rate_index_from_code(5), perf.SLOT_DEFAULT)
+        self.assertEqual(perf.rate_index_from_code(6), perf.SLOT_DEFAULT)
 
     def test_unknown_value_falls_back_to_1000hz(self):
         self.assertEqual(perf.rate_index_from_code(255), perf.SLOT_DEFAULT)
         self.assertEqual(perf.rate_index_from_code(None), perf.SLOT_DEFAULT)
+
+    def test_bool_is_not_a_code(self):
+        self.assertEqual(perf.rate_index_from_code(True), perf.SLOT_DEFAULT)
 
     def test_unhashable_input_falls_back_without_raising(self):
         self.assertEqual(perf.rate_index_from_code([8]), perf.SLOT_DEFAULT)

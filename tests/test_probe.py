@@ -249,6 +249,30 @@ class StatusTest(unittest.TestCase):
         self.assertEqual(left["fn"], "mouse_left")
         self.assertTrue(left["left_click"])
 
+    def test_status_button_hypothesis_decodes_wave_categories(self):
+        # Retro epic-4 F3: the keyboard/combo/macro write formats are decoded
+        # by --status, not only by the manual device validation.
+        from src.rapoo_vt7 import buttons
+
+        for raw, expected in (
+            ("00000400", "kb_a"),          # keyboard: 00 00 <HID> 00
+            ("02060100", "edit_copy"),     # combo preset
+            ("05000500", "macro_5"),       # macro slot 5
+        ):
+            with self.subTest(raw=raw):
+                dev = FakeDev(data={0x0634: bytes.fromhex(raw)})
+                status = probe.build_status(dev, report7_window=0.01)
+                bottom = next(
+                    b
+                    for b in status["hypothesis"]["buttons"]
+                    if b["name"] == "mouse_bottom"
+                )
+                self.assertEqual(bottom["raw"], raw.upper())
+                self.assertEqual(bottom["fn"], expected)
+                self.assertEqual(
+                    buttons.method_name(bytes.fromhex(raw)), expected
+                )
+
     def test_status_shared_byte_hypothesis(self):
         dev = FakeDev(data={0x08D8: b"\x05"})
         status = probe.build_status(dev, report7_window=0.01)

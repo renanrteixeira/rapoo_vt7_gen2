@@ -5,8 +5,13 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.rapoo_vt7 import device, protocol
-from src.rapoo_vt7.device import CommandTimeout, DeviceNotFound, RapooDevice
+from src.rapoo_vt7 import device, protocol, settings
+from src.rapoo_vt7.device import (
+    BaselineMissingError,
+    CommandTimeout,
+    DeviceNotFound,
+    RapooDevice,
+)
 
 
 class FakeClock:
@@ -22,7 +27,7 @@ class FakeClock:
 
 
 def make_device(prefix=protocol.PREFIX_WIRELESS):
-    dev = RapooDevice()
+    dev = RapooDevice(require_baseline=False)
     dev._fd = object()
     dev._prefix = prefix
     return dev
@@ -155,6 +160,28 @@ class WriteEepromTest(unittest.TestCase):
             with self.assertRaises(CommandTimeout):
                 dev.write_eeprom((0x04, 0x01), bytes([0x00]))
         mwrite.assert_called_once()
+
+    def test_two_candidates_timeout_sends_frame_exactly_once(self):
+        # Regression (retro epic-1 F2): with BOTH interfaces as candidates, a
+        # timed-out write must NOT be replayed on the other interface (the
+        # way query() falls back) — the destructive frame leaves exactly
+        # once, then CommandTimeout surfaces.
+        dev = make_device()
+        dev._candidates = [
+            ("/dev/hidraw2", protocol.PREFIX_WIRELESS),
+            ("/dev/hidraw9", protocol.PREFIX_USB),
+        ]
+        dev._active = 0
+        clock = FakeClock()
+        with mock.patch.object(device.os, "write") as mwrite, mock.patch.object(
+            device.select, "select", return_value=([], [], [])
+        ), mock.patch.object(device.os, "read") as mread, mock.patch.object(
+            device.time, "monotonic", clock.monotonic
+        ):
+            with self.assertRaises(CommandTimeout):
+                dev.write_eeprom((0x04, 0x01), bytes([0x00]))
+        self.assertEqual(mwrite.call_count, 1)
+        mread.assert_not_called()
 
 
 class WriteEepromVerifyTest(unittest.TestCase):
@@ -320,6 +347,79 @@ class OpenPrefixFilterTest(unittest.TestCase):
         dev._scan = lambda: []
         with self.assertRaises(DeviceNotFound):
             dev.open()
+
+
+class BaselineGateTest(unittest.TestCase):
+    """Golden rule (epic-1 F1): the app refuses EEPROM writes while no
+    restorable baseline exists. The gate fires before any I/O; diagnostic
+    tools opt out via `require_baseline=False`."""
+
+    def test_write_refused_without_baseline_and_nothing_sent(self):
+        dev = make_device()
+        dev._require_baseline = True
+        with mock.patch.object(
+            device.settings, "baseline_exists", return_value=False
+        ), mock.patch.object(device.os, "write") as mwrite:
+            with self.assertRaises(BaselineMissingError):
+                dev.write_eeprom((0x04, 0x01), bytes([0x00]))
+        mwrite.assert_not_called()
+
+    def test_error_message_is_localized(self):
+        dev = make_device()
+        dev._require_baseline = True
+        with mock.patch.object(
+            device.settings, "baseline_exists", return_value=False
+        ):
+            with self.assertRaises(BaselineMissingError) as ctx:
+                dev.write_eeprom((0x04, 0x01), bytes([0x00]))
+        self.assertEqual(str(ctx.exception), device.i18n.tr("baseline_missing"))
+
+    def test_write_allowed_when_baseline_exists(self):
+        dev = make_device()
+        dev._require_baseline = True
+        ack = ack_reply()
+        with mock.patch.object(
+            device.settings, "baseline_exists", return_value=True
+        ), mock.patch.object(device.os, "write") as mwrite, mock.patch.object(
+            device.select, "select", return_value=([dev._fd], [], [])
+        ), mock.patch.object(device.os, "read", return_value=ack):
+            resp = dev.write_eeprom((0x04, 0x01), bytes([0x00]))
+        mwrite.assert_called_once()
+        self.assertEqual(resp, ack)
+
+    def test_require_baseline_false_bypasses_the_gate(self):
+        dev = RapooDevice(require_baseline=False)
+        dev._fd = object()
+        dev._prefix = protocol.PREFIX_WIRELESS
+        ack = ack_reply()
+        with mock.patch.object(
+            device.settings, "baseline_exists", return_value=False
+        ), mock.patch.object(device.os, "write"), mock.patch.object(
+            device.select, "select", return_value=([dev._fd], [], [])
+        ), mock.patch.object(device.os, "read", return_value=ack):
+            resp = dev.write_eeprom((0x04, 0x01), bytes([0x00]))
+        self.assertEqual(resp, ack)
+
+    def test_verify_gate_fires_before_any_io(self):
+        dev = make_device()
+        dev._require_baseline = True
+        with mock.patch.object(
+            device.settings, "baseline_exists", return_value=False
+        ), mock.patch.object(device.os, "write") as mwrite:
+            with self.assertRaises(BaselineMissingError):
+                dev.write_eeprom_verify((0x04, 0x01), bytes([0x00]))
+        mwrite.assert_not_called()
+
+    def test_gate_runs_before_payload_validation(self):
+        dev = make_device()
+        dev._require_baseline = True
+        with mock.patch.object(
+            device.settings, "baseline_exists", return_value=False
+        ):
+            # Even an invalid payload surfaces the baseline error first: the
+            # golden rule is the outermost precondition of every write.
+            with self.assertRaises(BaselineMissingError):
+                dev.write_eeprom((0x04,), b"")
 
 
 if __name__ == "__main__":

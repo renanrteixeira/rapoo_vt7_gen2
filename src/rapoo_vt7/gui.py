@@ -169,6 +169,52 @@ def params_status_text(t, info, error):
     return "", False
 
 
+def dpi_render_plan(info, error):
+    """Pure DPI-tab widget plan (no GTK, headless-testable).
+
+    `info` is a `dpi.read_dpi` payload (or None) and `error` a tab-level
+    error string (or None). Returns a dict with:
+      "status": ("error", message) | ("unknown", None) |
+                ("current", x, n, total, cycle) — args for the
+                `dpi_current_gear` template (AC1: current gear value, 1-based
+                gear number, table length, active cycle count);
+      "rows": one {"slot", "current", "value"} dict per ACTIVE slot in cycle
+              order (a device gear byte out of the active range marks no row,
+              mirroring read_dpi's clamp contract defensively);
+      "can_add": whether "Add DPI" may append another gear.
+    """
+    if error is not None:
+        status = ("error", error)
+    elif info is None:
+        status = ("unknown", None)
+    else:
+        gear = int(info["gear"])
+        if 0 <= gear < len(info["x"]):
+            status = (
+                "current",
+                info["x"][gear],
+                gear + 1,
+                dpi.GEAR_LENGTH,
+                dpi.active_count(info["enable"]),
+            )
+        else:
+            status = ("unknown", None)
+    rows = []
+    can_add = False
+    if info is not None:
+        n = dpi.active_count(info["enable"])
+        for i in range(n):
+            rows.append(
+                {
+                    "slot": i,
+                    "current": i == int(info["gear"]),
+                    "value": info["x"][i],
+                }
+            )
+        can_add = n < dpi.GEAR_LENGTH
+    return {"status": status, "rows": rows, "can_add": can_add}
+
+
 def buttons_render_plan(info, error):
     """Pure per-button combo plan (no GTK, headless-testable).
 
@@ -385,6 +431,15 @@ class BatteryWindow:
         self._dpi_error = None
         self._dpi_timers = {}
         self._dpi_loading = False
+        # F6 (retro epic-2): True from click-time until the task completion
+        # lands in update_dpi/set_dpi_error — user DPI actions are mutually
+        # exclusive so two clicks never queue duplicate tasks computed from
+        # the same snapshot.
+        self._dpi_busy = False
+        # F2 (retro epic-2): bumped by add/delete/rebuild; a spin edit armed
+        # before the bump is discarded instead of writing through a compacted
+        # slot.
+        self._dpi_generation = 0
         self._perf = None
         self._perf_error = None
         self._perf_loading = False
@@ -395,7 +450,6 @@ class BatteryWindow:
         self._buttons = None
         self._buttons_error = None
         self._buttons_loading = False
-        self._button_combos = {}
 
         if application is not None:
             self._win = Gtk.ApplicationWindow(application=application)
@@ -700,9 +754,10 @@ class BatteryWindow:
         vbox.pack_start(self._param_box, False, False, 0)
 
     def _build_buttons_section(self, vbox):
-        # Button remap: a combo per physical button with the confirmed 4-byte
-        # functions. The left-click rule (≥1 left button) is enforced inside
-        # `buttons.set_function`, so the pickers can offer everything.
+        # Button remap: one row per physical button; "Choose function…" opens
+        # the per-button picker dialog (Funções | Teclado | Combos | Macros).
+        # The left-click rule (≥1 left button) is enforced inside
+        # `buttons.set_function`, so the picker can offer everything.
         self._buttons_title = Gtk.Label()
         self._buttons_title.set_markup(
             "<b>%s</b>" % GLib.markup_escape_text(self._t("buttons_section"))
@@ -1041,7 +1096,6 @@ class BatteryWindow:
 
         for child in self._buttons_grid.get_children():
             self._buttons_grid.remove(child)
-        self._button_combos = {}
         if self._buttons is not None:
             # On error the last-known values stay shown (never nulled); only
             # the pickers are disabled until the next successful read.
@@ -1071,7 +1125,6 @@ class BatteryWindow:
             pick.set_sensitive(not active and sensitive)
             pick.connect("clicked", self._on_button_pick, name)
             box.pack_start(pick, False, False, 0)
-            self._button_combos[name] = box
             self._buttons_grid.attach(lbl, 0, i, 1, 1)
             self._buttons_grid.attach(box, 1, i, 1, 1)
         self._buttons_grid.show_all()
@@ -1210,24 +1263,12 @@ class BatteryWindow:
         dialog.response(Gtk.ResponseType.OK)
         self._on_set_button(name, fid)
 
-    def _on_button_changed(self, combo, name):
-        """Legacy ComboBoxText handler (kept for the pre-dialog picker tests);
-        the live picker is `_on_button_pick` / `_picker_pick`."""
-        if self._buttons_loading:
-            return
-        if not combo.get_active() or not self._on_set_button:
-            return
-        fid = combo.get_active_id()
-        if fid == "__raw__":
-            return
-        if buttons.function_method(fid) is None:
-            # Decode-only row (BLE left-click variant): shows the current
-            # function but is not a writable option.
-            return
-        state = self._buttons["buttons"].get(name)
-        if state is not None and fid == state["fn"]:
-            return
-        self._on_set_button(name, fid)
+    # Retro epic-4 F2 (2026-08-20): the legacy ComboBoxText path
+    # (`_on_button_changed`, `__raw__` sentinel, decode-only combo guard) was
+    # REMOVED — dead UI kept only as a test fixture. The contracts it pinned
+    # stay covered on the live path: decode-only ids are never offered
+    # (`buttons.function_method(fid) is None`, tested in test_buttons) and
+    # raw methods are label-only text in `_render_buttons_pickers`.
 
     def update_buttons(self, info):
         self._buttons = info
@@ -1444,10 +1485,12 @@ class BatteryWindow:
     def update_dpi(self, info):
         self._dpi = info
         self._dpi_error = None
+        self._dpi_busy = False
         self._rebuild_dpi()
 
     def set_dpi_error(self, message):
         self._dpi_error = message
+        self._dpi_busy = False
         self._render_dpi_widgets()
 
     def get_dpi_info(self):
@@ -1457,7 +1500,7 @@ class BatteryWindow:
         return self._dpi is not None and self._dpi_error is None
 
     def _rebuild_dpi(self):
-        self._cancel_dpi_timers()
+        self._invalidate_pending_edits()
         self._render_dpi_widgets()
 
     def _render_dpi_widgets(self):
@@ -1471,25 +1514,24 @@ class BatteryWindow:
             self._dpi_loading = False
 
     def _render_dpi_widgets_locked(self):
-        # Status / error
-        if self._dpi_error:
+        # Status / error — decisions come from the pure plan (F3, retro
+        # epic-2): status kind + row list + can_add are headless-tested.
+        plan = dpi_render_plan(self._dpi, self._dpi_error)
+        kind, payload = plan["status"]
+        if kind == "error":
             self._dpi_status.set_markup(
                 "<span color='red'>%s</span>"
                 % GLib.markup_escape_text(
-                    self._t("dpi_error").format(error=self._dpi_error)
+                    self._t("dpi_error").format(error=payload)
                 )
             )
-        elif self._dpi is None:
+        elif kind == "unknown":
             self._dpi_status.set_text(self._t("dpi_unknown"))
         else:
-            info = self._dpi
-            gear = info["gear"]
+            x, n, total, cycle = payload
             self._dpi_status.set_text(
                 self._t("dpi_current_gear").format(
-                    x=info["x"][gear],
-                    n=gear + 1,
-                    total=dpi.GEAR_LENGTH,
-                    cycle=dpi.active_count(info["enable"]),
+                    x=x, n=n, total=total, cycle=cycle
                 )
             )
 
@@ -1501,68 +1543,82 @@ class BatteryWindow:
         self._dpi_radio = []
         self._dpi_spin = []
         self._dpi_del = []
-        self._dpi_add_btn.set_sensitive(
-            self._dpi is not None
-            and dpi.active_count(self._dpi["enable"]) < dpi.GEAR_LENGTH
-        )
-        if self._dpi is not None:
-            info = self._dpi
-            n = dpi.active_count(info["enable"])
-            group = None
-            for i in range(n):
-                current = i == info["gear"]
-                label = self._t("dpi_gear_row").format(n=i + 1, x=info["x"][i])
-                radio = Gtk.RadioButton.new_with_label_from_widget(group, label)
-                radio.set_active(current)
-                radio.set_tooltip_text(
-                    self._t("dpi_switch_tooltip").format(x=info["x"][i])
-                )
-                radio.connect("toggled", self._on_switcher_toggled, i)
-                group = radio
-                self._dpi_radio.append(radio)
+        self._dpi_add_btn.set_sensitive(plan["can_add"])
+        group = None
+        for row in plan["rows"]:
+            i = row["slot"]
+            label = self._t("dpi_gear_row").format(n=i + 1, x=row["value"])
+            radio = Gtk.RadioButton.new_with_label_from_widget(group, label)
+            radio.set_active(row["current"])
+            radio.set_tooltip_text(
+                self._t("dpi_switch_tooltip").format(x=row["value"])
+            )
+            radio.connect("toggled", self._on_switcher_toggled, i)
+            group = radio
+            self._dpi_radio.append(radio)
 
-                adj = Gtk.Adjustment(
-                    value=info["x"][i],
-                    lower=dpi.DPI_MIN,
-                    upper=dpi.DPI_MAX,
-                    step_increment=dpi.DPI_STEP,
-                    page_increment=500,
-                )
-                spin = Gtk.SpinButton(adjustment=adj, climb_rate=0, digits=0)
-                spin.set_numeric(True)
-                spin.connect("value-changed", self._on_spin_changed, i)
-                self._dpi_spin.append(spin)
+            adj = Gtk.Adjustment(
+                value=row["value"],
+                lower=dpi.DPI_MIN,
+                upper=dpi.DPI_MAX,
+                step_increment=dpi.DPI_STEP,
+                page_increment=500,
+            )
+            spin = Gtk.SpinButton(adjustment=adj, climb_rate=0, digits=0)
+            spin.set_numeric(True)
+            spin.connect("value-changed", self._on_spin_changed, i)
+            self._dpi_spin.append(spin)
 
-                delbtn = Gtk.Button(label="\u2715")
-                delbtn.set_relief(Gtk.ReliefStyle.NONE)
-                delbtn.set_tooltip_text(
-                    self._t("dpi_delete_tooltip").format(x=info["x"][i])
-                )
-                delbtn.connect("clicked", self._on_delete_gear, i)
-                self._dpi_del.append(delbtn)
+            delbtn = Gtk.Button(label="\u2715")
+            delbtn.set_relief(Gtk.ReliefStyle.NONE)
+            delbtn.set_tooltip_text(
+                self._t("dpi_delete_tooltip").format(x=row["value"])
+            )
+            delbtn.connect("clicked", self._on_delete_gear, i)
+            self._dpi_del.append(delbtn)
 
-                self._dpi_grid.attach(radio, 0, i, 1, 1)
-                self._dpi_grid.attach(spin, 1, i, 1, 1)
-                self._dpi_grid.attach(delbtn, 2, i, 1, 1)
+            self._dpi_grid.attach(radio, 0, i, 1, 1)
+            self._dpi_grid.attach(spin, 1, i, 1, 1)
+            self._dpi_grid.attach(delbtn, 2, i, 1, 1)
+        self._update_dpi_sensitivity()
 
         # The window may already be visible: widgets packed into a shown
         # container stay invisible until explicitly shown, so re-show the
         # rebuilt grid.
         self._dpi_grid.show_all()
 
+    def _update_dpi_sensitivity(self):
+        """Cross-disables the DPI user actions while an operation is in
+        flight (F6, retro epic-2) — mirrors the System-tab guard so two
+        clicks never queue duplicate tasks from the same snapshot. Defensive
+        over partial window builds (unit tests construct sub-sections)."""
+        busy = getattr(self, "_dpi_busy", False)
+        add = getattr(self, "_dpi_add_btn", None)
+        if add is not None:
+            plan = dpi_render_plan(getattr(self, "_dpi", None), None)
+            add.set_sensitive(plan["can_add"] and not busy)
+        for attr in ("_dpi_radio", "_dpi_spin", "_dpi_del"):
+            for widget in getattr(self, attr, []) or []:
+                widget.set_sensitive(not busy)
+
     def _on_switcher_toggled(self, btn, gear):
-        if self._dpi_loading or not btn.get_active():
+        if self._dpi_loading or self._dpi_busy or not btn.get_active():
             return
         if self._dpi is not None and gear == self._dpi["gear"]:
             return
         if self._on_switch_gear:
+            self._dpi_busy = True
+            self._update_dpi_sensitivity()
             self._on_switch_gear(gear)
 
     def _on_spin_changed(self, spin, gear):
         if self._dpi_loading:
             return
         self._cancel_timer(gear)
-        self._dpi_timers[gear] = GLib.timeout_add(600, self._apply_edit, gear)
+        generation = self._dpi_generation
+        self._dpi_timers[gear] = GLib.timeout_add(
+            600, self._apply_edit, gear, generation
+        )
 
     def _cancel_timer(self, gear):
         tid = self._dpi_timers.pop(gear, None)
@@ -1573,33 +1629,57 @@ class BatteryWindow:
         for gear in list(self._dpi_timers):
             self._cancel_timer(gear)
 
-    def _apply_edit(self, gear):
+    def _invalidate_pending_edits(self):
+        """F2 (retro epic-2): add/delete reshape (compact/sort) the active
+        list; any spin edit armed before that must never fire — it would
+        submit `set_value` built from the stale snapshot and overwrite the
+        SURVIVING gear at the compacted slot address."""
+        self._dpi_generation += 1
+        self._cancel_dpi_timers()
+
+    def _apply_edit(self, gear, generation=None):
         self._dpi_timers.pop(gear, None)
+        if (
+            generation is not None
+            and generation != getattr(self, "_dpi_generation", generation)
+        ):
+            # The list was reshaped after this edit was armed: discard it.
+            return GLib.SOURCE_REMOVE
         self._emit_value(gear)
         return GLib.SOURCE_REMOVE
 
     def _emit_value(self, gear):
         """Spin edit: DPI value ONLY — the gear list/cycle is untouched."""
-        if not self._on_set_value or self._dpi is None:
+        if not self._on_set_value or self._dpi is None or self._dpi_busy:
             return
         value = int(self._dpi_spin[gear].get_value())
+        self._dpi_busy = True
+        self._update_dpi_sensitivity()
         self._on_set_value(gear, value)
 
     def _on_add_gear(self, btn):
-        if self._dpi_loading or self._dpi is None:
+        if self._dpi_loading or self._dpi_busy or self._dpi is None:
+            return
+        if not dpi.active_count(self._dpi["enable"]) < dpi.GEAR_LENGTH:
             return
         self._dpi_msg.set_text("")
         if self._cb_add_gear:
+            self._invalidate_pending_edits()
+            self._dpi_busy = True
+            self._update_dpi_sensitivity()
             self._cb_add_gear()
 
     def _on_delete_gear(self, btn, gear):
-        if self._dpi_loading or self._dpi is None:
+        if self._dpi_loading or self._dpi_busy or self._dpi is None:
             return
         if dpi.active_count(self._dpi["enable"]) <= 1:
             self._dpi_msg.set_text(self._t("dpi_cant_delete"))
             return
         self._dpi_msg.set_text("")
         if self._cb_delete_gear:
+            self._invalidate_pending_edits()
+            self._dpi_busy = True
+            self._update_dpi_sensitivity()
             self._cb_delete_gear(gear)
 
     def show(self):

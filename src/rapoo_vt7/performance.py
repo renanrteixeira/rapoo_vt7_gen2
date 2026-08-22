@@ -23,7 +23,9 @@ The polling-rate register `MOUSE_REPORT` (`0x0880`) stores the *rateCode*
 (validated: writing 0x0880=8 -> rpt_usb becomes 8; restore -> back), and the
 A Hub's own rate-change listener matches `rateCode === rpt_usb`. The rpt_24g
 byte is NOT a rate code (observed constant on this device) — it is ignored.
-`rate_index_from_code` maps a code (or a raw 0..6 index) to the slot index.
+`rate_index_from_code` maps a validated rateCode to the slot index; any other
+value (including 0, which is not a code — retro epic-3 decision) falls back to
+the default 1000 Hz slot.
 
 The RF strategy byte `0x08D8` is SHARED with the low-power warning switch:
 `RF_STRENGTHEN_SWITCH` and `LOW_POWE_WARN_SWITCH` are the same address, a bit
@@ -32,7 +34,7 @@ expose that state and write with a mask so the unrelated bits are preserved,
 verifying by re-reading the byte.
 """
 
-from . import protocol
+from . import eeprom, protocol
 
 PERF_MODE_COUNT = 6
 PERF_MODES = tuple({"index": i, "key": "perf_mode_%d" % i} for i in range(PERF_MODE_COUNT))
@@ -64,16 +66,7 @@ def selectable_modes(slot):
 def _addr(slot):
     if not 0 <= slot < len(RATE_HZ):
         raise ValueError("slot out of range 0..%d" % (len(RATE_HZ) - 1))
-    return tuple(protocol.eeprom_bank0(protocol.SENSOR_MODE + slot))
-
-
-def _read(dev, addr, length):
-    resp = dev.read_eeprom(addr, length)
-    if not hasattr(resp, "__len__"):
-        raise ValueError("invalid EEPROM reply")
-    if len(resp) < protocol.EEPROM_DATA_OFFSET + length:
-        raise ValueError("short EEPROM reply")
-    return bytes(resp[protocol.EEPROM_DATA_OFFSET : protocol.EEPROM_DATA_OFFSET + length])
+    return eeprom.bank0(protocol.SENSOR_MODE + slot)
 
 
 # Shared RF byte at 0x08D8 (bank 0): RF_STRENGTHEN_SWITCH and
@@ -99,7 +92,7 @@ def read_rf(dev):
     Raises ValueError on a short/invalid reply (surfaced as an RF status error
     by the caller).
     """
-    raw = _read(dev, RF_SHARED_ADDR, 1)
+    raw = eeprom.read_bytes(dev, RF_SHARED_ADDR, 1)
     if len(raw) != 1:
         raise ValueError("short RF reply")
     return rf_state(raw[0])
@@ -110,10 +103,18 @@ def _write_shared_byte(dev, mask, enabled):
 
     The write is confirmed by re-reading the byte; a mismatch raises ValueError
     so the change is never accepted. Only the shared byte is written.
+
+    Accepted limitation (retro epic-3): this is a read-modify-write with no
+    inter-process lock. If ANOTHER process (e.g. the A Hub) rewrites 0x08D8 in
+    the window between our read and our write, its change is silently lost.
+    Within this app there is a single writer (all RF writes go through here,
+    serialized by BatteryMonitor.submit), so the risk is only cross-process
+    and was accepted instead of adding a lock protocol the firmware cannot
+    enforce.
     """
     if not isinstance(enabled, (bool, int)) or enabled not in (0, 1):
         raise ValueError("enabled must be a bool/int 0/1")
-    current = _read(dev, RF_SHARED_ADDR, 1)[0]
+    current = eeprom.read_bytes(dev, RF_SHARED_ADDR, 1)[0]
     new_byte = (current & ~mask) | (mask if enabled else 0)
     raw = dev.write_eeprom_verify(RF_SHARED_ADDR, bytes((new_byte,)))
     if len(raw) != 1 or raw[0] != new_byte:
@@ -151,16 +152,16 @@ def read_perf_state(dev, slot):
 
 
 def rate_index_from_code(code):
-    """Maps a report-7 rpt value (rateCode or raw index) to a slot index 0..6.
+    """Maps a report-7 rpt_usb RATE CODE to a slot index 0..6.
 
-    Falls back to the default 1000 Hz slot when the value is unrecognized.
-    Never raises (unhashable inputs fall back too).
+    The wire carries the validated codes 8/4/2/1/132/130/129 only. Any other
+    value — including 0, which is not a code (retro epic-3: "unknown or
+    unavailable" semantics) — falls back to SLOT_DEFAULT (1000 Hz). The old
+    raw-index passthrough (0..6) was removed: no caller ever passed a raw
+    index and it silently misread 0 as the 125 Hz slot. Never raises.
     """
     if isinstance(code, int) and not isinstance(code, bool):
-        if code in RATE_INDEX_BY_CODE:
-            return RATE_INDEX_BY_CODE[code]
-        if 0 <= code < len(RATE_HZ):
-            return code
+        return RATE_INDEX_BY_CODE.get(code, SLOT_DEFAULT)
     return SLOT_DEFAULT
 
 
@@ -195,7 +196,7 @@ def set_rate(dev, hz):
 
 def read_table(dev):
     """Reads the full 7-slot mode table (slot i = mode id)."""
-    raw = _read(dev, _addr(0), len(RATE_HZ))
+    raw = eeprom.read_bytes(dev, _addr(0), len(RATE_HZ))
     return list(raw)
 
 
@@ -203,7 +204,7 @@ def read_mode(dev, slot):
     """Reads the performance-mode id for one rate slot (0..6)."""
     if not isinstance(slot, int) or not 0 <= slot < len(RATE_HZ):
         raise ValueError("slot out of range 0..%d" % (len(RATE_HZ) - 1))
-    return _read(dev, _addr(slot), 1)[0]
+    return eeprom.read_bytes(dev, _addr(slot), 1)[0]
 
 
 def set_mode(dev, slot, mode):

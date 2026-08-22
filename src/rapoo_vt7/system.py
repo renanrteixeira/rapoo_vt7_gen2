@@ -50,7 +50,7 @@ rule of verifying the write by an immediate re-read. The GUI surface lives in
 
 import time
 
-from . import protocol
+from . import eeprom, i18n, protocol
 from .device import CommandTimeout
 
 # How many times the post-reset verification read is attempted, and the pause
@@ -123,19 +123,6 @@ class NameVerifyError(DeviceNameError):
     """The readback after the rename write did not match the written bytes."""
 
 
-def _addr(offset):
-    return tuple(protocol.eeprom_bank0(offset))
-
-
-def _read(dev, addr, length):
-    resp = dev.read_eeprom(addr, length)
-    if not hasattr(resp, "__len__"):
-        raise ValueError("invalid EEPROM reply")
-    if len(resp) < protocol.EEPROM_DATA_OFFSET + length:
-        raise ValueError("short EEPROM reply")
-    return bytes(resp[protocol.EEPROM_DATA_OFFSET : protocol.EEPROM_DATA_OFFSET + length])
-
-
 def read_verify_state(dev):
     """Reads the three factory-default markers into one payload.
 
@@ -143,9 +130,9 @@ def read_verify_state(dev):
     full 7-slot table as a list. Raises ValueError/CommandTimeout on a bad
     reply — the caller retries the whole read after the reset reboot.
     """
-    dpi_cur = _read(dev, _addr(protocol.MOUSE_DPI_CUR), 1)
-    rf_byte = _read(dev, _addr(protocol.RF_STRENGTHEN_SWITCH), 1)
-    sensor_mode = _read(dev, _addr(protocol.SENSOR_MODE), len(FACTORY_SENSOR_MODE))
+    dpi_cur = eeprom.read_bytes(dev, eeprom.bank0(protocol.MOUSE_DPI_CUR), 1)
+    rf_byte = eeprom.read_bytes(dev, eeprom.bank0(protocol.RF_STRENGTHEN_SWITCH), 1)
+    sensor_mode = eeprom.read_bytes(dev, eeprom.bank0(protocol.SENSOR_MODE), len(FACTORY_SENSOR_MODE))
     if len(dpi_cur) != 1 or len(rf_byte) != 1:
         raise ValueError("short factory-verify reply")
     return {
@@ -207,12 +194,16 @@ def factory_reset(dev, attempts=RESET_READ_ATTEMPTS, delay=RESET_READ_DELAY):
     fields are not at the factory defaults). No EEPROM is written.
     """
     before = read_verify_state(dev)
-    resp = dev.query(
-        protocol.RETURN_FACTORY_SETTINGS,
-        args=FACTORY_RESET_PAYLOAD,
-        timeout=1.0,
-    )
-    if resp is None or len(resp) < 2 or resp[1] != protocol.RESP_ACK:
+    # Single-execution send/read, NOT `dev.query`: query() replays the
+    # command on the other interface after a timeout, and 0xAD is destructive
+    # — the mouse must receive exactly one factory-reset frame.
+    dev.send_command(protocol.RETURN_FACTORY_SETTINGS, FACTORY_RESET_PAYLOAD)
+    resp = dev.read_response(protocol.RETURN_FACTORY_SETTINGS, timeout=1.0)
+    if resp is None:
+        # No answer (mouse asleep): same semantics as query()'s timeout, but
+        # WITHOUT the replay — a destructive command is sent exactly once.
+        raise CommandTimeout(i18n.tr("no_response"))
+    if len(resp) < 2 or resp[1] != protocol.RESP_ACK:
         raise FactoryResetAckError("factory reset reply was not an ACK")
     after = _read_verify_state_after_reset(dev, attempts, delay)
     if after == before:
@@ -254,7 +245,7 @@ def read_device_name(dev):
     errors="replace" — a raw "CFG1" is shown as-is, no A Hub default-config
     localization). Raises ValueError/CommandTimeout on a bad reply.
     """
-    raw = _read(dev, _addr(protocol.CONFIG_NAME), CONFIG_NAME_LENGTH)
+    raw = eeprom.read_bytes(dev, eeprom.bank0(protocol.CONFIG_NAME), CONFIG_NAME_LENGTH)
     return raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
 
 
@@ -268,7 +259,7 @@ def write_device_name(dev, name):
     """
     encoded = encode_name(name)
     try:
-        readback = dev.write_eeprom_verify(_addr(protocol.CONFIG_NAME), encoded)
+        readback = dev.write_eeprom_verify(eeprom.bank0(protocol.CONFIG_NAME), encoded)
     except ValueError as exc:
         raise NameVerifyError("device-name write did not verify") from exc
     return readback.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
