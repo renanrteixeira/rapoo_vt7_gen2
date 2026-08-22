@@ -41,7 +41,15 @@ prefix `rapoo_mouse_`, 46x24 px). User DPI actions use `submit(..., wake=True)`
 so they are attempted even if the mouse just fell asleep. **The physical DPI
 button stays in sync**: report 7 mirrors the gear + X/Y
 (`BatteryMonitor.on_report`), and the app re-reads the DPI config and rebuilds
-the tab when it changes.
+the tab when it changes. **Versions section DONE (2026-08-22)**: the System
+tab shows **Firmware do mouse** (0xA3 type 0 on the active connection,
+"v{major}.{minor}" — v0.145), **Firmware do receptor** (A Hub BaseSetting
+flow: 0xA3 types 0+1 on the receiver interface, "V{b/100}.{b%100}" joined
+with "-" — V1.45-V1.45; 🔶 own-vs-forwarded pending a cable A/B diff) and
+**Software** (`__version__ = "1.0"` in `src/rapoo_vt7/__init__.py`). Passive
+reads on tab open (`main._refresh_versions` → `system.read_versions`); each
+row degrades to "--" independently, never an error banner. `probe.py` prints
+the receiver line too.
 
 ---
 
@@ -93,7 +101,7 @@ firmware does **not** respond to it.
   | cmdId | name | payload |
   |---|---|---|
   | 0xA2 | get_work_mode | — |
-  | 0xA3 | get_firmware | `[type]` (use 0) |
+  | 0xA3 | get_firmware | `[type]` (use 0) — mouse: raw data[3].data[2] = "v{major}.{minor}" (v0.145). **Dongle (A Hub BaseSetting)**: types 0 E 1 no receptor (0xA5), cada byte → "V{b/100}.{b%100}", junto com "-" ("V1.45-V1.45"); 🔶 próprio vs encaminhado do mouse — diferir por A/B cabo↔wireless |
   | 0xA4 | read_eeprom | `[len≤24, addr_lo, addr_hi]` |
   | 0xA5 | write_eeprom | `[len, addr(4B), data...]` |
   | 0xA8 | factory_update | — |

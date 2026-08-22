@@ -689,6 +689,12 @@ class RelabelPerfWidgetsTest(unittest.TestCase):
         window._name_title = _W()
         window._name_entry = _W()
         window._name_button = _W()
+        window._versions_title = _W()
+        window._fw_mouse_label = _W()
+        window._fw_receiver_label = _W()
+        window._sw_label = _W()
+        window._fw_mouse = None
+        window._fw_receiver = None
         window._pair_title = _W()
         window._pair_hint = _W()
         window._pair_button = _W()

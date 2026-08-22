@@ -51,6 +51,12 @@ def firmware_probe(dev):
         major = resp[protocol.FIRMWARE_OFFSET_MAJOR]
         pid = (resp[7] << 8) | resp[6]
         print(i18n.tr("probe_firmware_line", major=major, minor=minor, pid=pid))
+    try:
+        receiver = system.read_receiver_firmware(dev)
+    except (CommandTimeout, DeviceNotFound, OSError, ValueError) as exc:
+        print(i18n.tr("probe_receiver_fw_error", error=exc))
+    else:
+        print(i18n.tr("probe_receiver_fw_line", version=receiver))
 
 
 def eeprom_probe(dev):

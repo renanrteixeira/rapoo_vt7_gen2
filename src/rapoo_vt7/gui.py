@@ -12,6 +12,7 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GLib, Gtk, Gdk, GdkPixbuf
 
 from . import buttons, dpi, i18n, parameters, performance as perf
+from . import __version__ as APP_VERSION
 from .pairing_session import (
     STATUS_CANCELLED,
     STATUS_ERROR,
@@ -424,6 +425,7 @@ class BatteryWindow:
         on_set_button=None,
         on_factory_reset=None,
         on_read_name=None,
+        on_read_versions=None,
         on_rename=None,
         on_start_pairing=None,
         on_cancel_pairing=None,
@@ -442,6 +444,7 @@ class BatteryWindow:
         self._on_set_button = on_set_button
         self._on_factory_reset = on_factory_reset
         self._on_read_name = on_read_name
+        self._on_read_versions = on_read_versions
         self._on_rename = on_rename
         self._on_start_pairing = on_start_pairing
         self._on_cancel_pairing = on_cancel_pairing
@@ -809,6 +812,38 @@ class BatteryWindow:
         self._system_status.set_line_wrap(True)
         vbox.pack_start(self._system_status, False, False, 2)
 
+        # Firmware versions (informational, passive reads on tab open): the
+        # mouse version via get_firmware on the active connection, the
+        # receiver/dongle version via the A Hub BaseSetting flow on its own
+        # interface, and this app's own version. A failed row shows "--" —
+        # never an error banner. Defaults are set here (not in __init__) so
+        # partial headless builds of the section stay self-sufficient.
+        self._fw_mouse = None
+        self._fw_receiver = None
+        self._versions_title = Gtk.Label()
+        self._versions_title.set_markup(
+            "<b>%s</b>" % GLib.markup_escape_text(self._t("versions_section"))
+        )
+        self._versions_title.set_halign(Gtk.Align.CENTER)
+        vbox.pack_start(self._versions_title, False, False, 0)
+
+        self._versions_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=2
+        )
+        self._versions_box.set_halign(Gtk.Align.CENTER)
+        vbox.pack_start(self._versions_box, False, False, 0)
+        self._fw_mouse_label = Gtk.Label()
+        self._fw_receiver_label = Gtk.Label()
+        self._sw_label = Gtk.Label()
+        for label in (
+            self._fw_mouse_label,
+            self._fw_receiver_label,
+            self._sw_label,
+        ):
+            label.set_halign(Gtk.Align.START)
+            self._versions_box.pack_start(label, False, False, 0)
+        self._render_versions()
+
         self._name_title = Gtk.Label()
         self._name_title.set_markup(
             "<b>%s</b>" % GLib.markup_escape_text(self._t("device_name_section"))
@@ -999,14 +1034,14 @@ class BatteryWindow:
 
     def _on_tab_switch(self, notebook, page, page_num):
         """Notebook page switched: opening the System tab re-reads the device
-        name (passive — a sleeping mouse surfaces a localized read error, it
-        is never woken by the app). Skipped while a rename is in flight."""
-        if (
-            page is self._system_page
-            and self._on_read_name
-            and not getattr(self, "_name_busy", False)
-        ):
-            self._on_read_name()
+        name and the firmware versions (passive — a sleeping mouse surfaces a
+        localized read error / "--" rows, it is never woken by the app).
+        Skipped while a rename is in flight."""
+        if page is self._system_page:
+            if self._on_read_name and not getattr(self, "_name_busy", False):
+                self._on_read_name()
+            if getattr(self, "_on_read_versions", None):
+                self._on_read_versions()
 
     def _on_rename_clicked(self, btn):
         """Rename button clicked: hands the entry text to `on_rename`.
@@ -1039,6 +1074,27 @@ class BatteryWindow:
         """
         if not self._name_entry.has_focus():
             self._name_entry.set_text(name if name is not None else "")
+
+    def update_versions(self, mouse_fw, receiver_fw):
+        """GTK thread. Shows freshly-read firmware version strings.
+
+        Each row degrades independently: None renders as "--" (mouse asleep,
+        receiver absent or asleep). The software row is static (this app's
+        own version).
+        """
+        self._fw_mouse = mouse_fw
+        self._fw_receiver = receiver_fw
+        self._render_versions()
+
+    def _render_versions(self):
+        """Renders the three version rows from the stored values + language."""
+        self._fw_mouse_label.set_text(
+            "%s: %s" % (self._t("fw_mouse"), self._fw_mouse or "--")
+        )
+        self._fw_receiver_label.set_text(
+            "%s: %s" % (self._t("fw_receiver"), self._fw_receiver or "--")
+        )
+        self._sw_label.set_text("%s: %s" % (self._t("fw_software"), APP_VERSION))
 
     def _on_factory_reset_clicked(self, btn):
         """Confirmation dialog (explicit and blocking) before the reset.
@@ -1776,6 +1832,10 @@ class BatteryWindow:
                 self._t("device_name_placeholder")
             )
             self._name_button.set_label(self._t("rename_button"))
+            self._versions_title.set_markup(
+                "<b>%s</b>" % GLib.markup_escape_text(self._t("versions_section"))
+            )
+            self._render_versions()
             self._pair_title.set_markup(
                 "<b>%s</b>"
                 % GLib.markup_escape_text(self._t("pairing_section"))

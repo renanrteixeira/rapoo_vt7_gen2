@@ -142,6 +142,7 @@ Alt R=0x40, Win R=0x80).
 | Device name | `0x09EC` | `CONFIG_NAME` `_3(1004)` — **16B string ✅**; reads "CFG1" on device; ✅ read + rename (2026-08-13, `system.py` + "Sistema" tab) |
 | Connection mode | `0xA2` `get_work_mode` | ✅ implemented in `tools/probe.py` |
 | Firmware/version | `0xA3` `get_firmware` | ✅ implemented |
+| Firmware versions display (mouse + dongle + app) | mouse: `0xA3` type 0 → raw data[3].`data[2]` = "v{major}.{minor}"; receiver: A Hub BaseSetting `getBaseFirmware` (`docs/BaseSetting-CsajUb0l.js`, functions `I`/`C`/`h`) — `get_firmware` type 0 AND type 1 on the **receiver interface** (prefix 0xA5), each byte rendered `${floor(b/100)}.${b%100}` ("V1.45"), joined with "-" | ✅ implemented 2026-08-22 (`system.py` `read_mouse_firmware`/`read_receiver_firmware`/`read_versions`; System tab "Versões" section + `probe.py --firmware` line; app version in `src/rapoo_vt7/__init__.py`). **On device**: mouse `v0.145`; receiver types 0+1 both answer byte `145` → "V1.45-V1.45" 🔶 whether that is the dongle's OWN version or the forwarded mouse version rendered by the Base formula — needs a cable-vs-wireless A/B diff to pin down; the rendering mirrors the official tool either way |
 
 ### F. Not applicable to the VT7 (⚠️ confirm before discarding)
 - **RGB/lighting**: `MOUSE_LIGHTMOD 0x0899`, `MOUSE_LIGHTRGB 0x08B8`
