@@ -189,6 +189,7 @@ rapoo_vt7_gen2/
 │   ├── main.py                 ← GTK loop + starts monitor and icon
 │   ├── protocol.py             ← CMDs, prefixes, offsets, addresses
 │   ├── device.py               ← direct hidraw + interface detection (rid 6)
+│   ├── eeprom.py               ← shared bank0/read_bytes helpers (retro F8)
 │   ├── battery.py              ← thread: 0xAA poll + passive report 7 listen
 │   ├── dpi.py                  ← Phase 2: read_dpi/set_gear/set_value/set_gears/add_gear/delete_gear
 │   ├── buttons.py              ← Phase 4: method table + read/set_function + ≥1-left rule
@@ -244,6 +245,13 @@ captured before any write.
 - [x] **B0** `write_eeprom` in `device.py` (`write_eeprom`/`write_eeprom_verify`,
       0xA5, 2B LE addr, readback verify) + `tools/probe.py --dump` (JSON baseline
       to `~/.cache/rapoo-vt7/eeprom_baseline.json`; 43 blocks 0x0600-0x0A00)
+      — **golden-rule gate ENFORCED (2026-08-20, retro F1)**: `RapooDevice`
+      refuses EEPROM writes (`BaselineMissingError`, localized) while the
+      baseline file is absent; diagnostic tools opt out via
+      `RapooDevice(require_baseline=False)` (writetest_c self-checks anyway).
+      **Shared EEPROM helper (retro F8)**: `eeprom.py` (`bank0`/`read_bytes`)
+      replaced the `_read`/`_addr` copies in dpi/performance/parameters/
+      buttons/system.
 - [x] **B1** Full read of the addresses `docs/FEATURES.md` §2
       — `tools/probe.py --status` reads all 34 registered fields (raw/decoded),
       cross-validates gear/dpiX/dpiY/rpt vs passive report 7 and flips

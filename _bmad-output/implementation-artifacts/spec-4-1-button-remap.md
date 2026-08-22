@@ -206,6 +206,22 @@ A Hub business rule that at least one left-click button stays functional.
   only i18n, recovery, per-field isolation, dynamic count, probe unknown-
   method) → suite **260 → 273 OK**. Defers recorded in deferred-work.md
   (story 3-2 `_on_set_rf` English "unknown RF field" string).
+- 2026-08-19 (second wave, retro reconciliation entry — epic-4 retro F1):
+  keyboard keys, combos and macros moved INTO the picker, superseding the
+  "_DECODE_ONLY, never offered/written" boundary recorded above. Write
+  formats derived from the A Hub chunk `changeKey-uvZcd8Zo.js` and VALIDATED
+  ON DEVICE before offering (the frozen Ask First gate was honored — the
+  formats matched, so no HALT): keyboard `00 00 <HID> 00` (104 keys),
+  combo `02 <key1> <modifier> <key2>` (10 presets; modifier = plain bitmask),
+  macro `05 00 <slot> 00` (12 slots). Reversible write-tests on 0x0634:
+  kb_a → `00000400`, edit_copy → `02060100`, macro_5 → `05000500`
+  (read-back verified, restored). `buttons.py` gains `KEYBOARD`/
+  `KEYBOARD_LABEL`/`COMBO`/`MODIFIER`/`MACRO_SLOTS` + `keyboard_method`/
+  `combo_method`/`macro_method`/`function_method`; `_DECODE_ONLY` now holds
+  ONLY the BLE left variant. The UI diverged from this spec's original
+  "combo per button" task: a per-button modal picker dialog (tabs Funções |
+  Teclado searchable | Combos | Macros); the legacy ComboBoxText path
+  survives only as a test fixture. Suite 273→510 OK.
 
 ## Design Notes
 

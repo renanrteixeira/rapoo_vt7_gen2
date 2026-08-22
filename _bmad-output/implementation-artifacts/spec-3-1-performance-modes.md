@@ -78,6 +78,26 @@ context:
 
 ## Spec Change Log
 
+- 2026-08-20 (retro reconciliation, epic-3 retro F4 — doc-only): records the
+  drift between this frozen text and the shipped app, none of it a behavior
+  defect:
+  1. **Scope split.** The "Never" clauses above bound STORY 3-1 only. The
+     same file set later grew the polling-rate UI + `set_rate` write path
+     (owned by spec-3-2) and the §C parameter toggles/sliders (owned by
+     spec-3-3). This spec's change log was empty while that happened; the
+     owning specs record their own deliveries.
+  2. **Asleep matrix row vs `wake=True`.** The frozen row "Device asleep /
+     timeout → no mode change, do not retry automatically" describes
+     BACKGROUND behavior, which still holds (background reads reject while
+     asleep). User-initiated mode clicks follow the project-wide convention
+     adopted after this spec froze: `submit(..., wake=True)` — attempted even
+     if the mouse just fell asleep; only a device timeout flips the monitor
+     back to "asleep" with a localized message (`main.py` `_on_set_perf`).
+  3. **Tab layout.** Later specs placed §C inside the "Desempenho" tab; as
+     built, §C lives on its own "Parâmetros" tab whose widgets are rendered
+     by the same `_render_perf` render function (`gui.py`) under one
+     `_perf_loading` guard. No behavior difference — a layout note only.
+
 
 ## Design Notes
 

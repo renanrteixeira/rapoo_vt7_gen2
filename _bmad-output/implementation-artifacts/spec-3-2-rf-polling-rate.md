@@ -125,6 +125,16 @@ context:
   a dedicated test (and pinned the existing cross-validation tests to the new
   check set); fixed the stale `docs/FEATURES.md` Phase 3 "Performance modes"
   bullet ("validation pending" → validated-on-device). Suite 223→224, all pass.
+- 2026-08-20 (retro reconciliation, epic-3 retro F4 — doc-only): the Design
+  Note below ("state/exposure only… should not expand the performance tab")
+  described the story's original intent. As shipped (and validated on the
+  real device 2026-08-11), the story ALSO delivers the polling-rate selector
+  UI (radio per slot 125..8000 Hz) and the `set_rate` write path
+  (`performance.py`: rateCode → `0x0880` + readback verify), plus the RF
+  strategy as a radio pair instead of a single ambiguous checkbox. The
+  expansion was reviewed at implementation time (defer recorded in Review
+  Findings) and is device-validated; this entry reconciles the frozen text
+  with the delivered scope so the spec no longer understates it.
 
 ## Design Notes
 
