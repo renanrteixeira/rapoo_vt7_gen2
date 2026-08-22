@@ -215,6 +215,27 @@ def dpi_render_plan(info, error):
     return {"status": status, "rows": rows, "can_add": can_add}
 
 
+def dpi_status_text(t, info, error):
+    """Pure DPI-tab status-line decision: returns (text, is_error).
+
+    Consumes the whole `plan["status"]` tuple — ("error", message) /
+    ("unknown", None) / ("current", x, n, total, cycle) — so the widget code
+    never unpacks it by hand: the "current" branch carries FIVE elements and
+    a naive 2-name unpack raised inside the idle_add render (F3 regression),
+    leaving the tab empty and Add disabled on every successful read.
+    """
+    status = dpi_render_plan(info, error)["status"]
+    if status[0] == "error":
+        return t("dpi_error").format(error=status[1]), True
+    if status[0] == "unknown":
+        return t("dpi_unknown"), False
+    _kind, x, n, total, cycle = status
+    return (
+        t("dpi_current_gear").format(x=x, n=n, total=total, cycle=cycle),
+        False,
+    )
+
+
 def buttons_render_plan(info, error):
     """Pure per-button combo plan (no GTK, headless-testable).
 
@@ -1517,23 +1538,13 @@ class BatteryWindow:
         # Status / error — decisions come from the pure plan (F3, retro
         # epic-2): status kind + row list + can_add are headless-tested.
         plan = dpi_render_plan(self._dpi, self._dpi_error)
-        kind, payload = plan["status"]
-        if kind == "error":
+        text, is_error = dpi_status_text(self._t, self._dpi, self._dpi_error)
+        if is_error:
             self._dpi_status.set_markup(
-                "<span color='red'>%s</span>"
-                % GLib.markup_escape_text(
-                    self._t("dpi_error").format(error=payload)
-                )
+                "<span color='red'>%s</span>" % GLib.markup_escape_text(text)
             )
-        elif kind == "unknown":
-            self._dpi_status.set_text(self._t("dpi_unknown"))
         else:
-            x, n, total, cycle = payload
-            self._dpi_status.set_text(
-                self._t("dpi_current_gear").format(
-                    x=x, n=n, total=total, cycle=cycle
-                )
-            )
+            self._dpi_status.set_text(text)
 
         # Gear editor: the active list (slots 0..enable). Each row is a radio
         # (selects the current gear) + DPI value spin + remove button. The

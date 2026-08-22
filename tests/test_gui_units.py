@@ -779,6 +779,30 @@ class DpiRenderPlanTest(unittest.TestCase):
         self.assertEqual([r["current"] for r in plan["rows"]], [False] * 3)
 
 
+class DpiStatusTextTest(unittest.TestCase):
+    """Regression (F3 unpack, found on-device): the plan "current" status is
+    a FIVE-element tuple; the widget used to unpack it as 2 names and the
+    ValueError killed the idle_add render — tab stayed empty and Add stayed
+    disabled on every successful read. The pure helper owns the unpack now."""
+
+    def test_current_formats_all_four_fields(self):
+        expected = t("dpi_current_gear").format(
+            x=1200, n=2, total=gui.dpi.GEAR_LENGTH, cycle=3
+        )
+        self.assertEqual(
+            gui.dpi_status_text(t, _dpi_info(), None), (expected, False)
+        )
+
+    def test_unknown_status(self):
+        self.assertEqual(gui.dpi_status_text(t, None, None), (t("dpi_unknown"), False))
+
+    def test_error_status_is_flagged_red(self):
+        self.assertEqual(
+            gui.dpi_status_text(t, None, "boom"),
+            (t("dpi_error").format(error="boom"), True),
+        )
+
+
 class _DpiWindowMixin:
     def _window(self):
         window = gui.BatteryWindow.__new__(gui.BatteryWindow)
