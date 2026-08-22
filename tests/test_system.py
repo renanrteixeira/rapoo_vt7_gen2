@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
 
 import probe
 from src.rapoo_vt7 import i18n, main, parameters, protocol, system
+from src.rapoo_vt7 import __version__ as APP_VERSION_STR
 from src.rapoo_vt7.device import CommandTimeout
 from src.rapoo_vt7.pairing_session import (
     STATUS_CANCELLED,
@@ -1048,16 +1049,23 @@ class SystemNameRowTest(unittest.TestCase):
     hands the entry text to the callback with a busy guard, the shared status
     message clears the busy state, and opening the System tab re-reads."""
 
-    def _window(self, on_rename=None, on_read_name=None):
+    def _window(self, on_rename=None, on_read_name=None, on_read_versions=None):
         from src.rapoo_vt7 import gui
 
         window = gui.BatteryWindow.__new__(gui.BatteryWindow)
         window._lang = "en"
         window._on_rename = on_rename
         window._on_read_name = on_read_name
+        window._on_read_versions = on_read_versions
         window._name_entry = _StubEntry()
         window._name_button = _StubButton()
         window._system_button = _StubButton()
+        window._versions_title = _StubLabel()
+        window._fw_mouse_label = _StubLabel()
+        window._fw_receiver_label = _StubLabel()
+        window._sw_label = _StubLabel()
+        window._fw_mouse = None
+        window._fw_receiver = None
         window._system_status = _StubLabel()
         window._system_busy = False
         window._name_busy = False
@@ -1102,21 +1110,39 @@ class SystemNameRowTest(unittest.TestCase):
 
     def test_tab_switch_reads_name_only_on_system_page(self):
         calls = []
-        window = self._window(on_read_name=lambda: calls.append("read"))
+        window = self._window(
+            on_read_name=lambda: calls.append("read"),
+            on_read_versions=lambda: calls.append("versions"),
+        )
         window._system_page = object()
         page = object()
         window._on_tab_switch(None, page, 5)
         self.assertEqual(calls, [])
         window._on_tab_switch(None, window._system_page, 6)
-        self.assertEqual(calls, ["read"])
+        self.assertEqual(calls, ["read", "versions"])
 
     def test_tab_switch_skips_read_while_rename_in_flight(self):
         calls = []
-        window = self._window(on_read_name=lambda: calls.append("read"))
+        window = self._window(
+            on_read_name=lambda: calls.append("read"),
+            on_read_versions=lambda: calls.append("versions"),
+        )
         window._system_page = object()
         window._name_busy = True
         window._on_tab_switch(None, window._system_page, 6)
-        self.assertEqual(calls, [])
+        # The rename busy guard only skips the NAME read; the passive
+        # versions refresh still runs (independent informational section).
+        self.assertEqual(calls, ["versions"])
+
+    def test_update_versions_renders_rows_and_fallback(self):
+        window = self._window()
+        window.update_versions("v0.145", "V1.45-V1.45")
+        self.assertIn("v0.145", window._fw_mouse_label._text)
+        self.assertIn("V1.45-V1.45", window._fw_receiver_label._text)
+        self.assertIn(APP_VERSION_STR, window._sw_label._text)
+        window.update_versions(None, None)
+        self.assertIn("--", window._fw_mouse_label._text)
+        self.assertIn("--", window._fw_receiver_label._text)
 
     def test_update_device_name_skips_set_text_while_focused(self):
         window = self._window()
@@ -1207,6 +1233,12 @@ class NameRowRetranslateTest(unittest.TestCase):
         window._name_title = _StubLabel()
         window._name_entry = _StubEntry()
         window._name_button = _StubButton()
+        window._versions_title = _StubLabel()
+        window._fw_mouse_label = _StubLabel()
+        window._fw_receiver_label = _StubLabel()
+        window._sw_label = _StubLabel()
+        window._fw_mouse = None
+        window._fw_receiver = None
         window._pair_title = _StubLabel()
         window._pair_hint = _StubLabel()
         window._pair_button = _StubButton()
@@ -1266,6 +1298,20 @@ class NameRowRetranslateTest(unittest.TestCase):
         self.assertEqual(
             window._name_button.label, i18n.LANGS["en"]["rename_button"]
         )
+
+    def test_versions_rows_retranslate_with_stored_values(self):
+        window = self._window()
+        window.update_versions("v0.145", None)
+        window._on_lang_changed(_StubCombo("en"))
+        self.assertIn(
+            i18n.LANGS["en"]["versions_section"], window._versions_title.markup
+        )
+        self.assertIn("v0.145", window._fw_mouse_label._text)
+        self.assertIn(i18n.LANGS["en"]["fw_mouse"], window._fw_mouse_label._text)
+        self.assertIn(
+            i18n.LANGS["en"]["fw_receiver"], window._fw_receiver_label._text
+        )
+        self.assertIn("--", window._fw_receiver_label._text)
 
     def test_retranslate_updates_the_pairing_block_to_english(self):
         window = self._window()
@@ -1952,6 +1998,185 @@ class PairingI18nTest(unittest.TestCase):
         for code, lang in i18n.LANGS.items():
             with self.subTest(locale=code):
                 lang["pairing_error"].format(error="boom")
+
+
+# --- firmware versions (System tab "Versions" section) --------------------
+
+
+def fw_reply(minor, major, pid=protocol.PID_USB):
+    """Raw hidraw get_firmware reply: 06 01 <minor> <major> .. <pid LE>."""
+    resp = bytearray(32)
+    resp[0] = protocol.REPORT_CMD
+    resp[1] = protocol.RESP_ACK
+    resp[protocol.FIRMWARE_OFFSET_MINOR] = minor & 0xFF
+    resp[protocol.FIRMWARE_OFFSET_MAJOR] = major & 0xFF
+    resp[6] = pid & 0xFF
+    resp[7] = (pid >> 8) & 0xFF
+    return bytes(resp)
+
+
+class FirmwareDev:
+    """RapooDevice stand-in for the version reads.
+
+    `replies` maps fw_type -> raw reply bytes (or an exception instance/class
+    to raise). `prefix` mirrors RapooDevice.prefix so read_receiver_firmware
+    can decide to reuse the device or open its own.
+    """
+
+    def __init__(self, replies, prefix=protocol.PREFIX_WIRELESS):
+        self.replies = dict(replies)
+        self.prefix = prefix
+        self.queries = []
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
+        self.queries.append((cmd_id, tuple(args)))
+        assert cmd_id == protocol.GET_FIRMWARE
+        result = self.replies[args[0]]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def get_firmware(self, fw_type=0):
+        return self.query(protocol.GET_FIRMWARE, [fw_type])
+
+
+class FormatVersionTest(unittest.TestCase):
+    def test_mouse_version_major_minor(self):
+        # On-device reply 2026-08-22: 06 01 91 00 ... -> v0.145.
+        self.assertEqual(system.format_mouse_version(fw_reply(0x91, 0x00)), "v0.145")
+
+    def test_mouse_version_two_digit_major(self):
+        self.assertEqual(system.format_mouse_version(fw_reply(0x03, 0x01)), "v1.3")
+
+    def test_base_version_a_hub_formula(self):
+        # A Hub h(): floor(145/100).(145%100) -> V1.45.
+        self.assertEqual(system.format_base_version(fw_reply(0x91, 0x00)), "V1.45")
+
+    def test_base_version_small_byte_not_padded(self):
+        self.assertEqual(system.format_base_version(fw_reply(0x08, 0x00)), "V0.8")
+
+    def test_short_replies_raise_value_error(self):
+        # format_mouse_version needs data[3] (len > 3); format_base_version
+        # only needs data[2] (len > 2) — a 3-byte reply is valid for it.
+        for bad in (None, b"", b"\x06\x01\x91"):
+            with self.subTest(bad=bad):
+                self.assertRaises(ValueError, system.format_mouse_version, bad)
+        for bad in (None, b"", b"\x06"):
+            with self.subTest(bad=bad):
+                self.assertRaises(ValueError, system.format_base_version, bad)
+
+
+class ReadMouseFirmwareTest(unittest.TestCase):
+    def test_reads_type_0_on_active_connection(self):
+        dev = FirmwareDev({0: fw_reply(0x91, 0x00)})
+        self.assertEqual(system.read_mouse_firmware(dev), "v0.145")
+        self.assertEqual(dev.queries, [(protocol.GET_FIRMWARE, (0,))])
+
+
+class ReadReceiverFirmwareTest(unittest.TestCase):
+    def test_reuses_device_already_on_receiver(self):
+        dev = FirmwareDev(
+            {0: fw_reply(0x91, 0x00), 1: fw_reply(0x92, 0x00)},
+            prefix=protocol.PREFIX_WIRELESS,
+        )
+        self.assertEqual(system.read_receiver_firmware(dev), "V1.45-V1.46")
+        self.assertEqual(
+            dev.queries,
+            [
+                (protocol.GET_FIRMWARE, (0,)),
+                (protocol.GET_FIRMWARE, (1,)),
+            ],
+        )
+
+    def test_opens_receiver_only_fd_when_on_cable(self):
+        cable_dev = FirmwareDev({}, prefix=protocol.PREFIX_USB)
+        rx_dev = FirmwareDev(
+            {0: fw_reply(0x91, 0x00), 1: fw_reply(0x91, 0x00)},
+            prefix=protocol.PREFIX_WIRELESS,
+        )
+        with mock.patch.object(
+            system, "RapooDevice", create=True
+        ) as ctor:
+            ctor.return_value.open.return_value = rx_dev
+            self.assertEqual(
+                system.read_receiver_firmware(cable_dev), "V1.45-V1.45"
+            )
+            ctor.return_value.open.assert_called_once_with(
+                prefix=protocol.PREFIX_WIRELESS
+            )
+
+    def test_none_dev_opens_receiver_only_fd(self):
+        rx_dev = FirmwareDev(
+            {0: fw_reply(0x2A, 0x00), 1: fw_reply(0x63, 0x00)},
+            prefix=protocol.PREFIX_WIRELESS,
+        )
+        with mock.patch.object(system, "RapooDevice", create=True) as ctor:
+            ctor.return_value.open.return_value = rx_dev
+            self.assertEqual(
+                system.read_receiver_firmware(None), "V0.42-V0.99"
+            )
+
+
+class ReadVersionsTest(unittest.TestCase):
+    def test_both_rows_ok(self):
+        rx = FirmwareDev(
+            {0: fw_reply(0x91, 0x00), 1: fw_reply(0x92, 0x00)},
+            prefix=protocol.PREFIX_WIRELESS,
+        )
+        mouse, receiver = system.read_versions(rx)
+        self.assertEqual(mouse, "v0.145")
+        self.assertEqual(receiver, "V1.45-V1.46")
+
+    def test_mouse_asleep_on_cable_receiver_still_answers(self):
+        # The app sits on the USB cable (mouse asleep -> mouse row times out);
+        # the receiver row runs on its own short-lived fd and still answers.
+        cable = FirmwareDev({0: CommandTimeout("asleep")}, prefix=protocol.PREFIX_USB)
+        rx = FirmwareDev(
+            {0: fw_reply(0x91, 0x00), 1: fw_reply(0x91, 0x00)},
+            prefix=protocol.PREFIX_WIRELESS,
+        )
+        with mock.patch.object(system, "RapooDevice", create=True) as ctor:
+            ctor.return_value.open.return_value = rx
+            self.assertEqual(system.read_versions(cable), (None, "V1.45-V1.45"))
+            self.assertTrue(rx.closed)
+
+    def test_mouse_asleep_shared_wireless_dev_fails_both(self):
+        # On the wireless interface both rows share the receiver fd: an
+        # asleep mouse times out every get_firmware.
+        dev = FirmwareDev(
+            {0: CommandTimeout("asleep"), 1: CommandTimeout("asleep")}
+        )
+        self.assertEqual(system.read_versions(dev), (None, None))
+
+    def test_receiver_missing_degrades_to_none(self):
+        from src.rapoo_vt7.device import DeviceNotFound
+
+        dev = FirmwareDev(
+            {
+                0: fw_reply(0x91, 0x00),
+                1: DeviceNotFound("no receiver"),
+            },
+            prefix=protocol.PREFIX_WIRELESS,
+        )
+        self.assertEqual(system.read_versions(dev), ("v0.145", None))
+
+    def test_total_failure_returns_none_none(self):
+        dev = FirmwareDev(
+            {0: CommandTimeout("asleep"), 1: CommandTimeout("down")}
+        )
+        self.assertEqual(system.read_versions(dev), (None, None))
+
+
+class VersionsI18nTest(unittest.TestCase):
+    def test_version_keys_exist_in_every_locale(self):
+        keys = ("versions_section", "fw_mouse", "fw_receiver", "fw_software")
+        for code, lang in i18n.LANGS.items():
+            for key in keys:
+                self.assertIn(key, lang, "locale %s missing key %r" % (code, key))
 
 
 if __name__ == "__main__":

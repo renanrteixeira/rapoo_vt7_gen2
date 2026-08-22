@@ -46,12 +46,28 @@ Besides the reset command, this module owns the **device-name primitives**
 bytes -> reject > 16 / embedded NUL -> NUL-pad to exactly 16) and the golden
 rule of verifying the write by an immediate re-read. The GUI surface lives in
 `gui.py` (System tab) and the `submit(..., wake=True)` wiring in `main.py`.
+
+It also owns the **firmware-version reads** (System tab "Versions" section):
+the mouse version via `get_firmware` (`0xA3`, type 0) on the active
+connection — raw reply data[3].data[2] rendered "v{major}.{minor}" (validated:
+v0.145) — and the receiver/dongle version via the A Hub BaseSetting
+`getBaseFirmware` flow: `get_firmware` type 0 AND type 1 sent on the receiver
+interface (prefix 0xA5), each byte rendered with the A Hub formula
+"V{b//100}.{b%100}" and joined with "-". Whether the 0xA5 reply is the
+receiver's OWN firmware or the forwarded mouse version is still open 🔶 (needs
+a cable-vs-wireless A/B test); the rendering mirrors the official tool either
+way.
 """
 
 import time
 
 from . import eeprom, i18n, protocol
-from .device import CommandTimeout
+from .device import (
+    CommandTimeout,
+    DeviceNotFound,
+    DeviceOpenError,
+    RapooDevice,
+)
 
 # How many times the post-reset verification read is attempted, and the pause
 # between attempts: after the 0xAD ACK the mouse reboots and may not answer
@@ -263,3 +279,87 @@ def write_device_name(dev, name):
     except ValueError as exc:
         raise NameVerifyError("device-name write did not verify") from exc
     return readback.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+
+
+# --- Firmware versions (System tab "Versions" section) ---------------------
+
+
+def format_mouse_version(resp):
+    """Renders a get_firmware (0xA3, type 0) raw reply as "v{major}.{minor}".
+
+    Raw hidraw reply: data[2] = minor, data[3] = major (A Hub mouse render
+    `v${c}.${l}`, validated on device: 06 01 91 00 ... -> v0.145). Raises
+    ValueError when the reply is too short to carry the version bytes.
+    """
+    if resp is None or len(resp) <= protocol.FIRMWARE_OFFSET_MAJOR:
+        raise ValueError("firmware reply too short")
+    return "v%d.%d" % (
+        resp[protocol.FIRMWARE_OFFSET_MAJOR],
+        resp[protocol.FIRMWARE_OFFSET_MINOR],
+    )
+
+
+def format_base_version(resp):
+    """Renders one receiver-firmware byte as the A Hub BaseSetting `h()`.
+
+    The A Hub reads WebHID byte 1 (= our raw data[2]) and formats
+    `${Math.floor(b/100)}.${b%100}`: 145 -> "V1.45", 8 -> "V0.8". Raises
+    ValueError when the reply is too short.
+    """
+    if resp is None or len(resp) <= protocol.FIRMWARE_OFFSET_MINOR:
+        raise ValueError("firmware reply too short")
+    b = resp[protocol.FIRMWARE_OFFSET_MINOR]
+    return "V%d.%d" % (b // 100, b % 100)
+
+
+def read_mouse_firmware(dev):
+    """Reads and renders the MOUSE firmware on the active connection."""
+    return format_mouse_version(dev.get_firmware(0))
+
+
+def read_receiver_firmware(dev=None, timeout=1.0):
+    """Reads and renders the RECEIVER (dongle) firmware.
+
+    A Hub BaseSetting `getBaseFirmware` (VT_nrf54L_Base): get_firmware type 0
+    then type 1 on the receiver interface, each rendered by `format_base_
+    version`, joined with "-" ("V1.45-V1.45"). When `dev` already sits on the
+    receiver interface (prefix 0xA5) it is reused; otherwise a short-lived
+    receiver-only fd is opened and closed here (the pairing session proves a
+    second fd is safe — hidraw input reports fan out to every open handle).
+    Any failure (no receiver plugged, asleep, timeout) raises — the caller
+    decides how to degrade.
+    """
+    owned = False
+    if dev is None or dev.prefix != protocol.PREFIX_WIRELESS:
+        dev = RapooDevice(require_baseline=False).open(
+            prefix=protocol.PREFIX_WIRELESS
+        )
+        owned = True
+    try:
+        versions = [
+            dev.query(protocol.GET_FIRMWARE, [fw_type], timeout=timeout)
+            for fw_type in (0, 1)
+        ]
+    finally:
+        if owned:
+            dev.close()
+    return "-".join(format_base_version(resp) for resp in versions)
+
+
+def read_versions(dev):
+    """Reads both firmware versions for the System tab (monitor-thread task).
+
+    Each row degrades independently to None — an informational section must
+    never surface an error banner: mouse asleep -> mouse None; no receiver /
+    receiver asleep -> receiver None. Returns (mouse_fw, receiver_fw).
+    """
+    mouse = receiver = None
+    try:
+        mouse = read_mouse_firmware(dev)
+    except (CommandTimeout, OSError, ValueError):
+        pass
+    try:
+        receiver = read_receiver_firmware(dev)
+    except (CommandTimeout, DeviceNotFound, DeviceOpenError, OSError, ValueError):
+        pass
+    return mouse, receiver

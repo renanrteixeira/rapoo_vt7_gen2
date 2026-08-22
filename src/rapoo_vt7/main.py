@@ -120,6 +120,7 @@ class RapooApp(Gtk.Application):
             on_set_button=self._on_set_button,
             on_factory_reset=self._on_factory_reset,
             on_read_name=self._refresh_name,
+            on_read_versions=self._refresh_versions,
             on_rename=self._on_rename,
             on_start_pairing=self._on_start_pairing,
             on_cancel_pairing=self._on_cancel_pairing,
@@ -578,6 +579,22 @@ class RapooApp(Gtk.Application):
             GLib.idle_add(hop)
 
         self._monitor.submit(system.read_device_name, on_done=done, on_error=err)
+
+    def _refresh_versions(self):
+        """Reads the firmware versions into the System tab (passive, no wake).
+
+        Runs on the System tab open (window switch-page). Each row degrades
+        independently to "--" inside `system.read_versions`; a total failure
+        (device gone) also just resets the rows — an informational section
+        never raises an error banner.
+        """
+        self._monitor.submit(
+            system.read_versions,
+            on_done=lambda res: GLib.idle_add(self._window.update_versions, *res),
+            on_error=lambda exc: GLib.idle_add(
+                self._window.update_versions, None, None
+            ),
+        )
 
     def _on_rename(self, text):
         """Rename button: writes the device name via submit(wake=True).
