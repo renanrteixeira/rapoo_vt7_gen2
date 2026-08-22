@@ -88,6 +88,8 @@ class I18nParityTest(unittest.TestCase):
                 "button_raw": {"hex": "03000100"},
                 "button_changed": {"button": "x", "fn": "y"},
                 "button_unknown_fn": {"fn": "x"},
+                "picker_title": {"button": "Left button"},
+                "fn_macro": {"n": 5},
                 "pairing_error": {"error": "x"},
                 "name_read_error": {"error": "x"},
                 "name_success": {"name": "x"},

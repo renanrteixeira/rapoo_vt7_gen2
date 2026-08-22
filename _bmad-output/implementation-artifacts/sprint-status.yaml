@@ -1,5 +1,5 @@
 generated: 08-10-2026 20:13
-last_updated: 08-18-2026 00:00
+last_updated: 08-20-2026 22:48
 project: rapoo_vt7_gen2
 project_key: NOKEY
 tracking_system: file-system
@@ -11,26 +11,26 @@ development_status:
   1-1-eeprom-write-verify: done
   1-2-baseline-dump-settings-module: done
   1-3-full-read-format-validation: done
-  epic-1-retrospective: optional
+  epic-1-retrospective: done
 
   # Phase 2 — DPI control (CAP-5) — S4
   # Implemented out of the story's scope: lives in the WINDOW tabs (not the
   # systray menu — the tray submenu was removed). See CONTEXT.md B2.
   epic-2: done
   2-1-dpi-systray-menu: done
-  epic-2-retrospective: optional
+  epic-2-retrospective: done
 
   # Phase 3 — Performance / parameters (CAP-6) — S5, S6, S7
   epic-3: done
   3-1-performance-modes: done
   3-2-rf-polling-rate: done
   3-3-mouse-parameters-toggles: done
-  epic-3-retrospective: optional
+  epic-3-retrospective: done
 
   # Phase 4 — Button remap (CAP-7) — S8
   epic-4: done
   4-1-button-remap: done
-  epic-4-retrospective: optional
+  epic-4-retrospective: done
 
   # Phase 5 — System operations (CAP-8) — Stories 9–12
   epic-5: done
@@ -134,7 +134,14 @@ action_items:
     action: "D3: Ask First on-device factory-reset validation + confirm the 0xAD wire
       form"
     owner: "dev"
-    status: open
+    status: done
+    note: >-
+      Closed (2026-08-19): real wire form is 0xAD WITH payload
+      [0x52,0x3D,0x00,0x00,0x00] (A Hub returnFactory); bare 0xAD answers empty
+      and does not apply. On-device validated: ACK + reboot + real factory
+      defaults differ from assumed (dpi_cur=5, sensor [0,0,1,2,3,3,3], DPI
+      [400..26000] enable=6, debounce 8/16, sleep 10 min). system.py sends the
+      payload and compares against corrected FACTORY_*. See CONTEXT.md B5/D3.
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
   - id: "epic-5-retro-item-16-p-pin-pairing-success-semantics-on-devic"
     epic: 5
@@ -151,3 +158,165 @@ action_items:
       RF. Documented in FEATURES.md §E + CONTEXT.md. Pinning them needs a
       second/unpaired mouse.
     ref: "_bmad-output/implementation-artifacts/epic-5-retro-08-18-2026.md"
+  - id: "epic-1-retro-item-17-f1-enforce-golden-rule-gate-in-the-app-w"
+    epic: 1
+    action: "F1: enforce golden-rule gate in the app write path - refuse EEPROM writes
+      when the baseline file is absent + tests"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-08-20-2026.md"
+  - id: "epic-1-retro-item-18-f2-add-2-candidate-no-replay-regression"
+    epic: 1
+    action: "F2: add 2-candidate no-replay regression test for write_eeprom (interface-switch
+      scenario must assert exactly one send)"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-08-20-2026.md"
+  - id: "epic-1-retro-item-19-f3-route-0xad-factory-reset-through-sing"
+    epic: 1
+    action: "F3: route 0xAD factory reset through single-execution send/read instead
+      of query() or record accepted deviation"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-08-20-2026.md"
+  - id: "epic-1-retro-item-20-f6-align-settings-field-encode-string-po"
+    epic: 1
+    action: "F6: align settings.Field.encode string policy with system.encode_name
+      (truncate/pad guarantee) + multibyte test"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-08-20-2026.md"
+  - id: "epic-1-retro-item-21-f7-reconcile-settings-registry-drift-sen"
+    epic: 1
+    action: "F7: reconcile settings registry drift - sensor_mode 7-slot table, duplicated
+      section-C/button tables, dead validator hook"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-08-20-2026.md"
+  - id: "epic-1-retro-item-22-f8-add-one-shared-eeprom-read-slice-help"
+    epic: 1
+    action: "F8: add one shared EEPROM read/slice helper to replace the ~11 duplicated
+      _read/slice sites"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-08-20-2026.md"
+  - id: "epic-1-retro-item-23-process-init-vcs-before-epic-start-and-c"
+    epic: 1
+    action: "Process: init VCS before epic start and commit per story (NO_VCS baseline
+      killed per-story attribution; no session logs for process analysis)"
+    owner: "process"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-1-retro-08-20-2026.md"
+  - id: "epic-2-retro-item-24-f1-clamp-device-provided-gear-byte-in-re"
+    epic: 2
+    action: "F1: clamp device-provided gear byte in read_dpi/consumers + out-of-range
+      cur tests"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-08-20-2026.md"
+  - id: "epic-2-retro-item-25-f2-staleness-token-for-pending-dpi-edits"
+    epic: 2
+    action: "F2: staleness token for pending DPI edits - delete/add invalidate the
+      600ms edit timer instead of writing through a compacted slot"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-08-20-2026.md"
+  - id: "epic-2-retro-item-26-f3-extract-pure-dpi-render-plan-headless"
+    epic: 2
+    action: "F3: extract pure DPI render plan + headless tests in the params/perf
+      pattern covering AC1 status string"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-08-20-2026.md"
+  - id: "epic-2-retro-item-27-f6-in-flight-guard-on-dpi-actions-disabl"
+    epic: 2
+    action: "F6: in-flight guard on DPI actions (disable while a task is queued) mirroring
+      the System tab cross-disable"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-08-20-2026.md"
+  - id: "epic-2-retro-item-28-f7-partial-failure-fakes-untested-branch"
+    epic: 2
+    action: "F7: partial-failure fakes + untested branches (_sorted_active fallback,
+      delete clamp boundary) in test_dpi.py"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-08-20-2026.md"
+  - id: "epic-2-retro-item-29-f4-reconcile-spec-2-1-fix-inverted-ac3-s"
+    epic: 2
+    action: "F4: reconcile spec-2-1 - fix inverted AC3 sentence, record tray-to-window
+      scope move and add/delete scope growth"
+    owner: "dev"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-2-retro-08-20-2026.md"
+  - id: "F1"
+    epic: 3
+    action: "P9 ampliado: diff de escrita no A Hub para cravar mapas debounce/sleep/angulo/lift-off
+      E bit-layout do 0x08D8 (uma sessao; Ask First on device)"
+    owner: ""
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-08-20-2026.md"
+  - id: "F3"
+    epic: 3
+    action: "Lote de testes: coalescing do slider (AC sem teste), _maybe_refresh_params,
+      re-label de idioma dos widgets perf, regressao double-submit RF, sensibilidade
+      selectable_modes"
+    owner: ""
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-08-20-2026.md"
+  - id: "F4"
+    epic: 3
+    action: "Drift de specs: preencher change log spec-3-1, emendar linha asleep vs
+      wake=True, registrar split aba Parametros, reconciliar nota state-only da 3-2
+      (doc-only)"
+    owner: ""
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-08-20-2026.md"
+  - id: "F5"
+    epic: 3
+    action: "Conflito 0x0884: resolver duplo registro mouse_slight/lift_off + contradicao
+      FEATURES.md 2.B vs 2.C"
+    owner: ""
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-08-20-2026.md"
+  - id: "F6"
+    epic: 3
+    action: "RMW lost-update no _write_shared_byte vs escritor externo: aceitar e
+      documentar (sem lock inter-processo)"
+    owner: ""
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-08-20-2026.md"
+  - id: "F7"
+    epic: 3
+    action: "Decidir semantica rpt_usb=0: slot 0 (atual, pinado por teste) vs SLOT_DEFAULT"
+    owner: ""
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-3-retro-08-20-2026.md"
+  - id: "F1"
+    epic: 4
+    action: "Reconciliacao spec+comentarios: emendar change log da spec-4-1 com a
+      onda 2026-08-19; corrigir comentarios stale (buttons.py x3, gui.py legacy);
+      registrar divergencia dialog-vs-combo (doc-only)"
+    owner: ""
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-08-20-2026.md"
+  - id: "F2"
+    epic: 4
+    action: "Decidir legado pre-dialog: remover ou documentar _button_combos + _on_button_changed"
+    owner: ""
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-08-20-2026.md"
+  - id: "F3"
+    epic: 4
+    action: "Lote de testes da onda: set_function com ids kb/combo/macro; cobertura
+      do picker dialog (ou plano puro); decode no probe; paridade i18n picker_title/fn_macro"
+    owner: ""
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-08-20-2026.md"
+  - id: "F4"
+    epic: 4
+    action: "_other_is_left: alinhar docstring com o comportamento fail-closed real
+      e considerar distinguir falha-de-leitura de nao-left"
+    owner: ""
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-4-retro-08-20-2026.md"

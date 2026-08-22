@@ -22,7 +22,7 @@ is bit-packed, so no masked write is needed here (the shared 0x08D8 byte and
 its masked writes belong to the RF feature, story 3-2).
 """
 
-from . import protocol
+from . import eeprom, protocol
 
 # name -> (bank0 offset, editable-as-toggle).
 # `editable` is True ONLY for fields whose value semantics the on-device
@@ -133,19 +133,6 @@ def choice_label(name, value):
     return "%s %s" % (number, unit) if unit else number
 
 
-def _addr(offset):
-    return tuple(protocol.eeprom_bank0(offset))
-
-
-def _read(dev, addr, length):
-    resp = dev.read_eeprom(addr, length)
-    if not hasattr(resp, "__len__"):
-        raise ValueError("invalid EEPROM reply")
-    if len(resp) < protocol.EEPROM_DATA_OFFSET + length:
-        raise ValueError("short EEPROM reply")
-    return bytes(resp[protocol.EEPROM_DATA_OFFSET : protocol.EEPROM_DATA_OFFSET + length])
-
-
 def is_editable(name):
     """True if a §C parameter is exposed as an editable on/off toggle."""
     return _PARAM_BY_NAME[name][1]
@@ -163,7 +150,7 @@ def read_param(dev, name):
     read-only params). Raises ValueError on a short/invalid reply.
     """
     offset, editable = _PARAM_BY_NAME[name]
-    raw = _read(dev, _addr(offset), 1)
+    raw = eeprom.read_bytes(dev, eeprom.bank0(offset), 1)
     if len(raw) != 1:
         raise ValueError("short §C reply for %s" % name)
     if editable and raw[0] not in (0, 1):
@@ -209,7 +196,7 @@ def set_param(dev, name, enabled):
     if not isinstance(enabled, (bool, int)) or enabled not in (0, 1):
         raise ValueError("enabled must be a bool/int 0/1")
     value = 1 if enabled else 0
-    raw = dev.write_eeprom_verify(_addr(offset), bytes((value,)))
+    raw = dev.write_eeprom_verify(eeprom.bank0(offset), bytes((value,)))
     if len(raw) != 1 or raw[0] != value:
         raise ValueError("§C write not verified (read back %r)" % (list(raw),))
     return {
@@ -237,7 +224,7 @@ def set_param_choice(dev, name, value):
     if isinstance(value, float):
         value = int(value)
     offset, _editable = _PARAM_BY_NAME[name]
-    raw = dev.write_eeprom_verify(_addr(offset), bytes((value,)))
+    raw = dev.write_eeprom_verify(eeprom.bank0(offset), bytes((value,)))
     if len(raw) != 1 or raw[0] != value:
         raise ValueError("§C write not verified (read back %r)" % (list(raw),))
     return {

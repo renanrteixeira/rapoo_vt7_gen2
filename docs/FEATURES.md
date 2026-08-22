@@ -52,15 +52,15 @@ with a **gear** system up to 7 gears.
 | Item | EEPROM | Notes |
 |---|---|---|
 | Performance mode | `0x08DC` (+6 bytes) | `SENSOR_MODE` `_3(732)` — a **7-slot table** starting at `0x08DC`, one byte per polling-rate index (0=125Hz … 6=8000Hz); value = **mode id 0..5**. ⚠️ id→name is REVERSED vs the A Hub UI card order (bundle `MousePerformanceUtil`: the `mode_0_*` card has `id:5`): **0 Office, 1 Balance (Low Power), 2 Fire (High Performance), 3 Hyper core, 4 Gaming hyper core, 5 Fury gaming** (Corded). "Set mode" writes 1 byte at `0x08DC + rate_index`; read mode reads that slot (A Hub write primitive `x0` = one `0xA5` len-1 write). **✅ VALIDATED ON DEVICE (2026-08-11)**: factory table `[0,0,1,1,3,3,3]` read; write+readback at slot 3 (1→4→1) restored OK; rate change (`0x0880`=8) mirrored in report 7 `rpt_usb` (8) — `rpt_usb` IS the rateCode, `rpt_24g` is not. Slot for the active rate comes from `rpt_usb` (or `0x0880`). A Hub selectable per slot: `{0:[0,1],1:[0,1],2:[0,1,2],3:[1,2,3,4,5],4:[2,3,4,5],5:[3,4,5],6:[3,4,5]}` |
-| Internal sensor parameters | `0x0880` `0x0881` `0x0884` `0x0885` | `MOUSE_REPORT`/`MOUSE_SCAN`/`MOUSE_SLIGHT`/`MOUSE_MOTION` — **1B ✅**; change together with the mode; ⚠️ do not edit directly without understanding |
-| RF strategy | `0x08D8` | `RF_STRENGTHEN_SWITCH` (smart / full RF). **Shared byte ✅ (read)**: shares one byte with `LOW_POWE_WARN_SWITCH` (read 0x00 = bits 00000000) — a bit mask; per-field writes must use masked values. **Bit layout ⚠️ working hypothesis** (`protocol.RF_STRENGTHEN_MASK`/`LOW_POWE_WARN_MASK`): bit 0 = RF strengthen (0 Adaptive, 1 Maximum RF), bit 1 = low-battery light warning (0 off, 1 on) — not yet confirmed by a device write-diff. Any write must preserve the unrelated bits and be verified by re-reading the whole byte. Implemented + unit-tested in `performance.py` (`read_rf`/`write_rf_strengthen`/`write_low_power_warn`) and exposed in the Desempenho tab (state + toggles) — story 3-2 |
-| Polling rate (回报率) | `0x0880` | `MOUSE_REPORT` (the byte IS the **rateCode**): 125→8, 250→4, 500→2, 1000→1, 2000→132, 4000→130, 8000→129 (A Hub `u` list). **Slots 0..6 map to those codes in order** (`performance.RATE_INDEX_BY_CODE`/`rate_hz`): slot 0=125, 1=250, 2=500, 3=1000, 4=2000, 5=4000, 6=8000 Hz. Passive: report 7 `data[11]`=rpt_usb mirrors `0x0880` (**validated**: writing 0x0880=8 → rpt_usb=8; restore → back; the A Hub rate-change listener matches `rateCode === rpt_usb`); `data[10]`=rpt_24g is NOT a rate code (observed constant) and is ignored. `performance.rate_index_from_code` maps the code to the slot 0..6.
+| Internal sensor parameters | `0x0880` `0x0881` `0x0885` | `MOUSE_REPORT`/`MOUSE_SCAN`/`MOUSE_MOTION` — **1B ✅**; change together with the mode; ⚠️ do not edit directly without understanding. `0x0884` moved to §2.C: it is the **lift-off height** byte (`MOUSE_SLIGHT` = §C lift_off slider, byte 1..11 ↔ 1.0..2.0 mm) — one semantic, one owner (retro epic-3 F5; the old "do not edit" warning here contradicted the §2.C slider) |
+| RF strategy | `0x08D8` (bit 0) | `RF_STRENGTHEN_SWITCH` (smart / full RF). **Bit layout ✅ device-confirmed (P9, 2026-08-20)**: bit 0 = RF strengthen (0 Adaptive, 1 Maximum RF) — A Hub "RF Maximum" flips only this bit. Masked write preserving the byte's other bits + readback verify (`performance.write_rf_strengthen`). **Low-power warning is a DISTINCT byte** — the old shared-byte/bit-1 hypothesis was REFUTED on hardware: the A Hub warning toggle writes `0x08D9` (00 off / 01 on, `LOW_POWE_WARN_SWITCH`) AND an aux byte `0x08DB` (FF off / 0F on, `LOW_POWE_WARN_AUX`, semantics unresolved; baseline anomaly: original state had D9=01 with DB=FF). `write_low_power_warn` mirrors both bytes so our state stays byte-identical with A Hub writes and never touches 0x08D8. Implemented + unit-tested in `performance.py` (`read_rf` reads D8+D9) and exposed in the Desempenho tab (state + toggles) — story 3-2 + P9 ampliado. **Accepted limitation (retro epic-3)**: the RF masked write is a read-modify-write with no inter-process lock — an external writer (e.g. A Hub) changing `0x08D8` inside the window is silently lost; single in-app writer, risk accepted |
+| Polling rate (回报率) | `0x0880` | `MOUSE_REPORT` (the byte IS the **rateCode**): 125→8, 250→4, 500→2, 1000→1, 2000→132, 4000→130, 8000→129 (A Hub `u` list). **Slots 0..6 map to those codes in order** (`performance.RATE_INDEX_BY_CODE`/`rate_hz`): slot 0=125, 1=250, 2=500, 3=1000, 4=2000, 5=4000, 6=8000 Hz. Passive: report 7 `data[11]`=rpt_usb mirrors `0x0880` (**validated**: writing 0x0880=8 → rpt_usb=8; restore → back; the A Hub rate-change listener matches `rateCode === rpt_usb`); `data[10]`=rpt_24g is NOT a rate code (observed constant) and is ignored. `performance.rate_index_from_code` maps the code to the slot 0..6. **Semantics decision (retro epic-3)**: the wire carries rate CODES only — any other value, including `rpt_usb=0`, means "unknown/unavailable" and falls back to the default **1000 Hz** slot (the old raw-index passthrough misread 0 as the 125 Hz slot).
       **Changing the rate is implemented** (`performance.set_rate(dev, hz)`:
       writes the rateCode to `0x0880` + readback verify; the Desempenho tab
       shows a radio per slot 125..8000 Hz with the current one marked, and
       the RF strategy is a marked radio pair Adaptative/Maximum) |
 
-### C. Mouse parameters — ✅ addresses + ✅ writable (write-test 2026-08-11); byte maps ⚠️ inferred (P9)
+### C. Mouse parameters — ✅ addresses + ✅ writable (write-test 2026-08-11); byte maps ✅ device-diffed (P9 ampliado, 2026-08-20)
 On-device write-test per byte (read → write → re-read → restore, each byte
 restored exactly) confirmed writability + stickiness. Inputs shipped:
 **toggles** only for the bool-validated bytes, **sliders** for the numeric
@@ -86,12 +86,12 @@ are written (`set_param_choice`; user-initiated, `wake=True`):
 > receiver PID map in `docs/enc-map.data.json` `5139→17939`) sets
 > `enableGlassTracking:false` and `dcSwitch:false`, so the A Hub **hides** the
 > Glass tracking and DC switch toggles for this product. We keep both because
-> the bytes are writable and sticky on the hardware. Debounce/sleep/angle have
-> no per-product range in `enc.data` — the ranges above come from the A Hub
-> settings page, the byte maps are OUR inference (press/release/sleep: byte =
-> displayed value, defaults agree; angle: signed byte; lift-off: byte 1..11 ↔
-> 1.0–2.0, factory 0x01 = minimum). Definitive confirmation = observe an A Hub
-> write and diff the byte (pending, P9).
+> the bytes are writable and sticky on the hardware. **Byte maps
+> device-confirmed (P9 ampliado, 2026-08-20, A Hub write-diffs)**:
+> press/release debounce = byte in ms (10 ms → 0x0A, 8 ms → 0x08); sleep =
+> byte in minutes (30 min → 0x1E); angle = two's-complement signed byte
+> (+5° → 0x05, −5° → 0xFB); lift-off = byte 1..11 ↔ 1.0–2.0 mm (2.0 mm →
+> 0x0B). Our earlier inference matched every observed value.
 
 ### D. Button remap — ✅ addresses, ✅ codes (CONFIRMED 2026-08-12)
 Each key has a bank-0 EEPROM field storing a **4-byte "method"**
@@ -229,16 +229,20 @@ recorded here. When resuming, start from the end of the last marked phase.
       THE REAL DEVICE (2026-08-11)**: factory table `[0,0,1,1,3,3,3]`; rate
       `0x0880`=1 → slot 3; write + readback of slot 3 (1→4→1) restored; a
       rate-code write is mirrored by `rpt_usb` (the tab re-renders).
-- [x] RF strategy (`0x08D8`, bits) + polling rate (map index→Hz) — story 3-2.
-      The shared byte is exposed consistently (`read_rf`/`rf_state`: RF
-      strengthen bit 0, low-power warning bit 1); the Desempenho tab shows the
-      RF/low-power state and provides masked-write toggles that preserve the
-      unrelated bits and are confirmed by re-reading (a readback mismatch is
-      rejected with an error). The active polling rate in Hz follows the
-      validated `rpt_usb` → slot mapping (`rate_hz`/`rate_index_from_code`),
-      with `perf.SLOT_DEFAULT` fallback when `rpt_usb` is unavailable.
-      ⚠️ The exact bit positions (0x01/0x02) are the working hypothesis — the
-      device read was 0x00; a write test diffing an A Hub dump should confirm.
+- [x] RF strategy (`0x08D8` bit 0) + low-power warning (`0x08D9`+`0x08DB`) +
+      polling rate (map index→Hz) — story 3-2, **P9 ampliado device-confirmed
+      (2026-08-20)**: the two features live in DISTINCT bytes — the old
+      shared-byte/bit-1 hypothesis was refuted on hardware (A Hub diffs:
+      "RF Maximum" flips only bit 0 of D8; the warning toggle writes D9=00/01
+      AND DB=FF/0F). `read_rf` reads both bytes; RF writes are masked on D8;
+      `write_low_power_warn` mirrors D9+DB (verified) and never touches D8.
+      The Desempenho tab shows the state and provides verified toggles. The
+      active polling rate in Hz follows the validated `rpt_usb` → slot mapping
+      (`rate_hz`/`rate_index_from_code`), with `perf.SLOT_DEFAULT` fallback
+      when `rpt_usb` is unavailable. ⚠️ Open: the standalone semantics of the
+      aux byte `0x08DB` are unresolved (it tracked every warning toggle in
+      session; the captured baseline had D9=01 with DB=FF, which does not fit
+      the observed pair pattern).
 - [x] §C parameters as toggle/state (story 3-3): motion sync, glass tracking
       and DC switch shipped as **confirmed bool toggles** (on-device write-test
       validated: read → write → re-read → restore). Linear correction, sensor

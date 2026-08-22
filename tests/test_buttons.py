@@ -410,6 +410,48 @@ class SetFunctionTest(unittest.TestCase):
         self.assertEqual(dev.writes[-1], (0x0608, bytes.fromhex("03000100")))
 
 
+class SetFunctionWaveTest(unittest.TestCase):
+    """The 2026-08-19 wave through `set_function`: keyboard, combo and macro
+    ids are writable offers (retro epic-4 F3 — the wave's write path had only
+    manual on-device coverage)."""
+
+    def test_keyboard_id_write_and_readback(self):
+        dev = FakeDev()
+        result = buttons.set_function(dev, "mouse_right", "kb_a")
+        self.assertEqual(result["fn"], "kb_a")
+        addr = int(buttons.button_addr("mouse_right"), 16)
+        self.assertEqual(dev.writes[-1], (addr, bytes.fromhex("00000400")))
+        self.assertEqual(result["raw_hex"], "00000400")
+
+    def test_combo_id_write_and_readback(self):
+        dev = FakeDev()
+        result = buttons.set_function(dev, "mouse_bottom", "edit_copy")
+        self.assertEqual(result["fn"], "edit_copy")
+        addr = int(buttons.button_addr("mouse_bottom"), 16)
+        self.assertEqual(dev.writes[-1], (addr, bytes.fromhex("02060100")))
+
+    def test_macro_id_write_and_readback(self):
+        dev = FakeDev()
+        result = buttons.set_function(dev, "mouse_scroll_forward", "macro_5")
+        self.assertEqual(result["fn"], "macro_5")
+        addr = int(buttons.button_addr("mouse_scroll_forward"), 16)
+        self.assertEqual(dev.writes[-1], (addr, bytes.fromhex("05000500")))
+
+    def test_out_of_range_macro_slot_rejected(self):
+        dev = FakeDev()
+        for fid in ("macro_%d" % buttons.MACRO_SLOTS, "macro_-1", "macro_x"):
+            with self.subTest(fid=fid), self.assertRaises(ValueError):
+                buttons.set_function(dev, "mouse_right", fid)
+        self.assertEqual(dev.writes, [])
+
+    def test_decode_only_ble_variant_still_not_writable(self):
+        # The BLE left-click variant stays read-only after the wave.
+        dev = FakeDev()
+        with self.assertRaises(buttons.UnknownFunctionError):
+            buttons.set_function(dev, "mouse_bottom", "mouse_left_ble")
+        self.assertEqual(dev.writes, [])
+
+
 class SettingsRegistryTest(unittest.TestCase):
     def test_button_fields_are_four_bytes(self):
         from src.rapoo_vt7 import settings
@@ -604,37 +646,6 @@ class MainButtonTest(unittest.TestCase):
             on_error(buttons.NoLeftClickError())
         self.assertIn("left", app._window.errors[-1].lower())
 
-    def test_on_button_changed_raw_selection_is_noop(self):
-        from src.rapoo_vt7 import gui
-
-        calls = []
-        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
-        window._buttons_loading = False
-        window._buttons = {"buttons": {"mouse_right": {"fn": "fire_button"}}}
-        window._on_set_button = lambda name, fid: calls.append((name, fid))
-        combo = _StubCombo()
-        combo.active = "__raw__"
-        window._on_button_changed(combo, "mouse_right")
-        self.assertEqual(calls, [])
-
-    def test_on_button_changed_decode_only_selection_is_noop(self):
-        # Decode-only ids (BLE left-click variant, gated combos) are shown as a
-        # labelled row but are not writable — re-selecting one must not submit.
-        from src.rapoo_vt7 import gui
-
-        calls = []
-        window = gui.BatteryWindow.__new__(gui.BatteryWindow)
-        window._buttons_loading = False
-        window._buttons = {
-            "buttons": {"mouse_ble": {"fn": "mouse_left_ble"}}
-        }
-        window._on_set_button = lambda name, fid: calls.append((name, fid))
-        combo = _StubCombo()
-        combo.active = "mouse_left_ble"
-        window._on_button_changed(combo, "mouse_ble")
-        self.assertEqual(calls, [])
-
-
 class FakeWindow:
     """Stands in for BatteryWindow in main.py handler tests (error-aware
     `has_buttons` / `update_buttons` mirror gui.BatteryWindow)."""
@@ -665,19 +676,6 @@ class FakeWindow:
 class FakeNotification:
     def show(self):
         pass
-
-
-class _StubCombo:
-    """Minimal ComboBoxText stand-in for gui._on_button_changed."""
-
-    def __init__(self):
-        self.active = None
-
-    def get_active(self):
-        return True
-
-    def get_active_id(self):
-        return self.active
 
 
 class I18nLabelBindingTest(unittest.TestCase):

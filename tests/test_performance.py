@@ -96,13 +96,21 @@ class RateIndexTest(unittest.TestCase):
         self.assertEqual(perf.rate_index_from_code(130), 5)  # 4000 Hz
         self.assertEqual(perf.rate_index_from_code(129), 6)  # 8000 Hz
 
-    def test_accepts_raw_index(self):
-        self.assertEqual(perf.rate_index_from_code(0), 0)
-        self.assertEqual(perf.rate_index_from_code(6), 6)
+    def test_zero_and_raw_indexes_fall_back_to_1000hz(self):
+        # Retro epic-3 decision: the wire carries rate CODES only; 0 and raw
+        # slot indexes are not codes -> default (the old passthrough misread
+        # rpt_usb=0 as the 125 Hz slot).
+        self.assertEqual(perf.rate_index_from_code(0), perf.SLOT_DEFAULT)
+        self.assertEqual(perf.rate_index_from_code(3), perf.SLOT_DEFAULT)
+        self.assertEqual(perf.rate_index_from_code(5), perf.SLOT_DEFAULT)
+        self.assertEqual(perf.rate_index_from_code(6), perf.SLOT_DEFAULT)
 
     def test_unknown_value_falls_back_to_1000hz(self):
         self.assertEqual(perf.rate_index_from_code(255), perf.SLOT_DEFAULT)
         self.assertEqual(perf.rate_index_from_code(None), perf.SLOT_DEFAULT)
+
+    def test_bool_is_not_a_code(self):
+        self.assertEqual(perf.rate_index_from_code(True), perf.SLOT_DEFAULT)
 
     def test_unhashable_input_falls_back_without_raising(self):
         self.assertEqual(perf.rate_index_from_code([8]), perf.SLOT_DEFAULT)
@@ -138,7 +146,7 @@ class RfBoomDev(FakeDev):
 
     def read_eeprom(self, addr, length=1):
         base = (addr[1] << 8) | addr[0]
-        if base == (perf.RF_SHARED_ADDR[1] << 8) | perf.RF_SHARED_ADDR[0]:
+        if base == (perf.RF_ADDR[1] << 8) | perf.RF_ADDR[0]:
             return b"\x00" * 3
         return super().read_eeprom(addr, length)
 
@@ -148,7 +156,8 @@ class ReadPerfStateTest(unittest.TestCase):
         dev = FakeDev(
             data={
                 0x08DF: bytes([4]),  # slot 3 mode
-                0x08D8: bytes([0x03]),  # RF full + low-power warn on
+                0x08D8: bytes([0x01]),  # RF maximum (bit 0)
+                0x08D9: bytes([1]),  # warning on (own byte)
             }
         )
         info = perf.read_perf_state(dev, 3)
@@ -230,28 +239,38 @@ class MainPerfSlotTest(unittest.TestCase):
 
 
 class RfReadTest(unittest.TestCase):
-    def test_reads_shared_byte_and_decodes_both_switches(self):
-        dev = FakeDev(data={0x08D8: b"\x03"})
+    def test_reads_distinct_bytes_and_decodes_both_switches(self):
+        dev = FakeDev(data={0x08D8: b"\x01", 0x08D9: b"\x01"})
         state = perf.read_rf(dev)
         self.assertEqual(state["addr"], "0x08D8")
-        self.assertEqual(state["raw"], 3)
+        self.assertEqual(state["raw"], 1)
+        self.assertEqual(state["warn_raw"], 1)
         self.assertTrue(state["rf_strengthen_switch"])
         self.assertTrue(state["low_power_warn_switch"])
 
     def test_read_exposes_state_consistently(self):
-        # Both switches come from the same byte: bit 0 = RF, bit 1 = low-power.
-        self.assertEqual(perf.read_rf(FakeDev(data={0x08D8: b"\x01"})), {
+        # P9 device diff: RF = bit 0 of 0x08D8; warning = whole 0x08D9.
+        self.assertEqual(perf.read_rf(FakeDev(data={0x08D8: b"\x01", 0x08D9: b"\x00"})), {
             "addr": "0x08D8",
             "raw": 1,
+            "warn_raw": 0,
             "rf_strengthen_switch": True,
             "low_power_warn_switch": False,
         })
-        self.assertEqual(perf.read_rf(FakeDev(data={0x08D8: b"\x02"})), {
+        self.assertEqual(perf.read_rf(FakeDev(data={0x08D8: b"\x00", 0x08D9: b"\x01"})), {
             "addr": "0x08D8",
-            "raw": 2,
+            "raw": 0,
+            "warn_raw": 1,
             "rf_strengthen_switch": False,
             "low_power_warn_switch": True,
         })
+
+    def test_d8_bit1_is_not_the_warning_anymore(self):
+        # Regression guard for the P9 refutation: D8=0x02 must NOT read as a
+        # warning-on state (the old bit-1 decoding) and bit 0 stays clear.
+        state = perf.read_rf(FakeDev(data={0x08D8: b"\x02", 0x08D9: b"\x00"}))
+        self.assertFalse(state["rf_strengthen_switch"])
+        self.assertFalse(state["low_power_warn_switch"])
 
     def test_read_failure_surfaces_error(self):
         with self.assertRaises(ValueError):
@@ -259,26 +278,38 @@ class RfReadTest(unittest.TestCase):
 
 
 class RfWriteTest(unittest.TestCase):
-    def test_rf_strengthen_write_preserves_low_power_bit(self):
-        dev = FakeDev(data={0x08D8: b"\x02"})  # low-power on, RF off
+    def _rf_data(self, d8=0x00, d9=0x00, aux=0xFF):
+        return {0x08D8: bytes([d8]), 0x08D9: bytes([d9]), 0x08DB: bytes([aux])}
+
+    def test_rf_strengthen_write_preserves_other_bits_and_warning_byte(self):
+        dev = FakeDev(data=self._rf_data(d8=0x02, d9=0x01))
         state = perf.write_rf_strengthen(dev, True)
         self.assertEqual(dev.writes, [(0x08D8, b"\x03")])
         self.assertTrue(state["rf_strengthen_switch"])
         self.assertTrue(state["low_power_warn_switch"])
 
     def test_rf_strengthen_disable_preserves_other_bits(self):
-        dev = FakeDev(data={0x08D8: b"\x03"})
+        dev = FakeDev(data=self._rf_data(d8=0x03, d9=0x01))
         state = perf.write_rf_strengthen(dev, False)
         self.assertEqual(dev.writes, [(0x08D8, b"\x02")])
         self.assertFalse(state["rf_strengthen_switch"])
         self.assertTrue(state["low_power_warn_switch"])
 
-    def test_low_power_write_preserves_rf_bit(self):
-        dev = FakeDev(data={0x08D8: b"\x01"})  # RF full, warning off
+    def test_low_power_write_touches_only_its_own_bytes(self):
+        # P9 device mirror: ON writes D9=01 AND DB=0F; D8 (RF) is untouched.
+        dev = FakeDev(data=self._rf_data(d8=0x01))
         state = perf.write_low_power_warn(dev, True)
-        self.assertEqual(dev.writes, [(0x08D8, b"\x03")])
+        self.assertEqual(
+            dev.writes, [(0x08D9, b"\x01"), (0x08DB, b"\x0F")]
+        )
         self.assertTrue(state["rf_strengthen_switch"])
         self.assertTrue(state["low_power_warn_switch"])
+
+    def test_low_power_off_writes_sentinel_pair(self):
+        dev = FakeDev(data=self._rf_data(d9=0x01))
+        state = perf.write_low_power_warn(dev, False)
+        self.assertEqual(dev.writes, [(0x08D9, b"\x00"), (0x08DB, b"\xff")])
+        self.assertFalse(state["low_power_warn_switch"])
 
     def test_verify_mismatch_raises_and_is_not_accepted(self):
         dev = BadVerifyDev(current=0x00)
@@ -297,28 +328,23 @@ class RfWriteTest(unittest.TestCase):
         self.assertEqual(dev.writes, [])
 
 
-class RfSharedMaskTest(unittest.TestCase):
-    def test_writes_never_zero_unrelated_bits(self):
-        # Full byte: toggling either field must leave all other bits intact.
+class RfBytesTest(unittest.TestCase):
+    def test_strengthen_masked_write_never_zeroes_unrelated_bits(self):
         dev = FakeDev(data={0x08D8: b"\xff"})
         perf.write_rf_strengthen(dev, True)
         self.assertEqual(dev.writes, [(0x08D8, b"\xff")])
         dev = FakeDev(data={0x08D8: b"\xfe"})
         perf.write_rf_strengthen(dev, False)
         self.assertEqual(dev.writes, [(0x08D8, b"\xfe")])
-        dev = FakeDev(data={0x08D8: b"\xfd"})
-        perf.write_low_power_warn(dev, True)
-        self.assertEqual(dev.writes, [(0x08D8, b"\xff")])
 
-    def test_both_fields_share_one_address(self):
-        self.assertEqual(
-            perf.RF_SHARED_ADDR,
-            tuple(protocol.eeprom_bank0(protocol.RF_STRENGTHEN_SWITCH)),
-        )
-        self.assertEqual(
+    def test_fields_live_on_distinct_addresses(self):
+        # P9 (2026-08-20): the shared-byte premise was REFUTED on hardware.
+        self.assertNotEqual(
             protocol.RF_STRENGTHEN_SWITCH, protocol.LOW_POWE_WARN_SWITCH
         )
-        self.assertNotEqual(protocol.RF_STRENGTHEN_MASK, protocol.LOW_POWE_WARN_MASK)
+        self.assertEqual(perf.RF_ADDR[1] << 8 | perf.RF_ADDR[0], 0x08D8)
+        self.assertEqual(perf.WARN_ADDR[1] << 8 | perf.WARN_ADDR[0], 0x08D9)
+        self.assertEqual(perf.WARN_AUX_ADDR[1] << 8 | perf.WARN_AUX_ADDR[0], 0x08DB)
 
 
 class PollingRateHzTest(unittest.TestCase):
@@ -521,9 +547,9 @@ class MainRfTest(unittest.TestCase):
         self.assertTrue(wake)
         self.assertTrue(callable(on_done))
         self.assertTrue(callable(on_error))
-        # Running the task writes only the RF bit and preserves the low-power
-        # bit that was already set.
-        state = fn(FakeDev(data={0x08D8: b"\x02"}))
+        # Running the task writes only the RF bit and preserves the other
+        # bits of 0x08D8 plus the separate warning byte.
+        state = fn(FakeDev(data={0x08D8: b"\x02", 0x08D9: b"\x01"}))
         self.assertTrue(state["rf_strengthen_switch"])
         self.assertTrue(state["low_power_warn_switch"])
 

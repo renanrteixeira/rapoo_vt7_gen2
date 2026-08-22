@@ -62,14 +62,14 @@ class ReadDpiTest(unittest.TestCase):
         dev = FakeDev(
             data={
                 0x0898: b"\x02",                       # dpi_current = gear 2
-                0x0896: b"\x01",                       # enable
+                0x0896: b"\x05",                       # enable (6 active slots)
                 0x0888 + 2 * 2: b"\x88\x13",           # x[2] = 5000
                 0x08C8 + 2 * 2: b"\x88\x13",           # y[2] = 5000
             }
         )
         info = dpi.read_dpi(dev)
         self.assertEqual(info["gear"], 2)
-        self.assertEqual(info["enable"], 1)
+        self.assertEqual(info["enable"], 5)
         self.assertEqual(len(info["x"]), dpi.GEAR_LENGTH)
         self.assertEqual(len(info["y"]), dpi.GEAR_LENGTH)
         self.assertEqual(info["x"][2], 5000)
@@ -87,6 +87,29 @@ class ReadDpiTest(unittest.TestCase):
         dev.read_eeprom = short
         with self.assertRaises(ValueError):
             dpi.read_dpi(dev)
+
+
+class GearClampTest(unittest.TestCase):
+    """A garbage gear byte from the device is clamped into the active cycle
+    (retro epic-2 F1): consumers index info["x"] with it and must never
+    see an out-of-range value."""
+
+    def _dev(self, cur, enable):
+        return FakeDev(data={0x0898: bytes([cur]), 0x0896: bytes([enable])})
+
+    def test_cur_above_active_range_clamps_to_last_active_slot(self):
+        self.assertEqual(dpi.read_dpi(self._dev(200, 1))["gear"], 1)
+        self.assertEqual(dpi.read_dpi(self._dev(9, 6))["gear"], 6)
+
+    def test_cur_below_zero_clamps_to_zero(self):
+        # 0xFF as a signed read would be -1; the clamp floors at 0.
+        self.assertEqual(dpi.read_dpi(self._dev(0xFF, 1))["gear"], 1)
+
+    def test_cur_within_range_is_untouched(self):
+        self.assertEqual(dpi.read_dpi(self._dev(2, 5))["gear"], 2)
+
+    def test_huge_enable_caps_at_gear_length(self):
+        self.assertEqual(dpi.read_dpi(self._dev(250, 0xFF))["gear"], 6)
 
 
 class ActiveCountTest(unittest.TestCase):
@@ -317,6 +340,87 @@ class DeleteGearTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             dpi.delete_gear(dev, sample_info(enable=0), 0)
         self.assertEqual(dev.writes, [])
+
+
+class PartialFailDev(FakeDev):
+    """FakeDev whose write_eeprom_verify raises from one chosen absolute
+    address — the partial-failure fake the suite lacked (retro epic-2 F7;
+    contrast: FakeDev always succeeds, test_performance has BadVerifyDev).
+    Writes that happened BEFORE the failing one stay recorded, so a test can
+    document exactly how far a multi-write sequence got."""
+
+    def __init__(self, fail_at):
+        super().__init__()
+        self.fail_at = fail_at
+
+    def write_eeprom_verify(self, addr, data):
+        base = (addr[1] << 8) | addr[0]
+        self.writes.append((base, bytes(data)))
+        if base == self.fail_at:
+            raise OSError("device gone mid-sequence")
+        return bytes(data)
+
+
+class PartialFailureTest(unittest.TestCase):
+    """Retro epic-1 F5 (deferred, non-atomic multi-field writes) documented
+    by test: when a sequence dies midway the earlier writes are already on
+    the device and the later ones never happen."""
+
+    def test_set_gears_failure_after_x_keeps_enable_untouched(self):
+        dev = PartialFailDev(0x08C8)  # Y list write fails
+        with self.assertRaises(OSError):
+            dpi.set_gears(dev, [800, 1200], [800, 1200])
+        # X was written (new values paired with the STALE Y on hardware),
+        # the enable byte was never written.
+        self.assertEqual(dev.writes[0][0], 0x0888)
+        self.assertEqual([w[0] for w in dev.writes[1:]], [0x08C8])
+        self.assertNotIn(0x0896, [w[0] for w in dev.writes])
+
+    def test_set_value_failure_between_x_and_y(self):
+        dev = PartialFailDev(0x08CA)  # slot-1 Y write fails
+        info = sample_info()
+        with self.assertRaises(OSError):
+            dpi.set_value(dev, info, 1, 900)
+        self.assertEqual(
+            [w[0] for w in dev.writes], [0x088A, 0x08CA]
+        )  # X written, Y attempted
+
+
+class SortedActiveFallbackTest(unittest.TestCase):
+    """Retro epic-2 F7: `_sorted_active`'s not-found fallback (dpi.py:98) —
+    a stale snapshot whose current value is no longer in the active list
+    re-selects slot 0 instead of raising or writing garbage."""
+
+    def test_cur_value_missing_falls_back_to_slot_zero(self):
+        xl, yl, new_cur = dpi._sorted_active([800], [800], 1200)
+        self.assertEqual((xl, yl, new_cur), ([800], [800], 0))
+
+    def test_found_value_still_maps_to_first_slot_holding_it(self):
+        xl, yl, new_cur = dpi._sorted_active([1200, 800], [1200, 800], 1200)
+        self.assertEqual((xl, yl), ([800, 1200], [800, 1200]))
+        self.assertEqual(new_cur, 1)
+
+    def test_duplicate_values_pick_the_lowest_slot(self):
+        _xl, _yl, new_cur = dpi._sorted_active([800, 800], [800, 800], 800)
+        self.assertEqual(new_cur, 0)
+
+
+class DeleteClampBoundaryTest(unittest.TestCase):
+    """Retro epic-2 F7: delete's `max(0, min(new_cur, len-1))` clamp — a
+    stale snapshot (gear index beyond the active list) must land inside the
+    compacted list, never out of range."""
+
+    def test_stale_current_clamped_into_compacted_list(self):
+        dev = FakeDev()
+        info = {"gear": 5, "enable": 1, "x": [800, 1200], "y": [800, 1200]}
+        result = dpi.delete_gear(dev, info, 1)
+        self.assertEqual(result["current"], 0)
+
+    def test_deleting_last_slot_of_two_with_current_on_it(self):
+        dev = FakeDev()
+        info = {"gear": 1, "enable": 1, "x": [800, 1200], "y": [800, 1200]}
+        result = dpi.delete_gear(dev, info, 1)
+        self.assertEqual(result["current"], 0)
 
 
 if __name__ == "__main__":

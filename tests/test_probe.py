@@ -193,7 +193,7 @@ class StatusTest(unittest.TestCase):
         r[protocol.R7_CONFIG] = 1
         return bytes(r)
 
-    def test_status_reads_every_field_and_shared_byte_once(self):
+    def test_status_reads_every_field_and_rf_bytes_once(self):
         dev = FakeDev()
         status = probe.build_status(dev, report7_window=0.01)
 
@@ -206,15 +206,15 @@ class StatusTest(unittest.TestCase):
                 self.assertIn("raw", field)
                 self.assertIn("value", field)
 
-        shared_calls = [
-            a for a, _ in dev.calls if (a[1] << 8) | a[0] == 0x08D8
-        ]
-        self.assertEqual(
-            len(shared_calls), 1, "shared 0x08D8 byte must be read only once"
-        )
-        self.assertEqual(
-            status["fields"]["rf_strengthen_switch"]["raw"],
-            status["fields"]["low_power_warn_switch"]["raw"],
+        for base_addr, label in ((0x08D8, "RF"), (0x08D9, "warning")):
+            calls = [a for a, _ in dev.calls if (a[1] << 8) | a[0] == base_addr]
+            self.assertEqual(
+                len(calls), 1, "%s byte 0x%04X must be read only once" % (label, base_addr)
+            )
+        # P9 (2026-08-20): distinct bytes, so the raw values are independent.
+        self.assertNotEqual(
+            status["fields"]["rf_strengthen_switch"]["addr"],
+            status["fields"]["low_power_warn_switch"]["addr"],
         )
 
     def test_status_decodes_known_value(self):
@@ -249,14 +249,50 @@ class StatusTest(unittest.TestCase):
         self.assertEqual(left["fn"], "mouse_left")
         self.assertTrue(left["left_click"])
 
-    def test_status_shared_byte_hypothesis(self):
-        dev = FakeDev(data={0x08D8: b"\x05"})
+    def test_status_button_hypothesis_decodes_wave_categories(self):
+        # Retro epic-4 F3: the keyboard/combo/macro write formats are decoded
+        # by --status, not only by the manual device validation.
+        from src.rapoo_vt7 import buttons
+
+        for raw, expected in (
+            ("00000400", "kb_a"),          # keyboard: 00 00 <HID> 00
+            ("02060100", "edit_copy"),     # combo preset
+            ("05000500", "macro_5"),       # macro slot 5
+        ):
+            with self.subTest(raw=raw):
+                dev = FakeDev(data={0x0634: bytes.fromhex(raw)})
+                status = probe.build_status(dev, report7_window=0.01)
+                bottom = next(
+                    b
+                    for b in status["hypothesis"]["buttons"]
+                    if b["name"] == "mouse_bottom"
+                )
+                self.assertEqual(bottom["raw"], raw.upper())
+                self.assertEqual(bottom["fn"], expected)
+                self.assertEqual(
+                    buttons.method_name(bytes.fromhex(raw)), expected
+                )
+
+    def test_status_rf_hypothesis(self):
+        # P9 (2026-08-20): RF = bit 0 of 0x08D8; warning = whole 0x08D9.
+        dev = FakeDev(data={0x08D8: b"\x05", 0x08D9: b"\x01"})
         status = probe.build_status(dev, report7_window=0.01)
-        shared = status["hypothesis"]["shared_0x08D8"]
-        self.assertEqual(shared["raw"], 5)
-        self.assertEqual(shared["bits"], "0b00000101")
-        self.assertTrue(shared["rf_strengthen_switch"])
-        self.assertFalse(shared["low_power_warn_switch"])
+        rf = status["hypothesis"]["rf"]
+        self.assertEqual(rf["addr"], "0x08D8")
+        self.assertEqual(rf["raw"], 5)
+        self.assertEqual(rf["bits"], "0b00000101")
+        self.assertTrue(rf["rf_strengthen_switch"])
+        self.assertEqual(rf["warn_addr"], "0x08D9")
+        self.assertEqual(rf["warn_raw"], 1)
+        self.assertTrue(rf["low_power_warn_switch"])
+
+    def test_status_rf_hypothesis_warning_off_is_not_d8_bit1(self):
+        # Regression guard for the refuted shared-byte decoding: D8 bit 1 set
+        # must NOT report the warning on when 0x08D9 is zero.
+        dev = FakeDev(data={0x08D8: b"\x02", 0x08D9: b"\x00"})
+        status = probe.build_status(dev, report7_window=0.01)
+        rf = status["hypothesis"]["rf"]
+        self.assertFalse(rf["low_power_warn_switch"])
 
     def test_status_params_classified_from_registry(self):
         dev = FakeDev(

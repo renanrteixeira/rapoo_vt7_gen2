@@ -1,11 +1,12 @@
 import os
 import re
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.rapoo_vt7 import protocol, settings
+from src.rapoo_vt7 import buttons, eeprom, parameters, performance, protocol, settings
 from src.rapoo_vt7.settings import Field
 
 
@@ -23,6 +24,7 @@ class RegistryTest(unittest.TestCase):
             "mouse_motion",
             "rf_strengthen_switch",
             "low_power_warn_switch",
+            "low_power_warn_aux",
             "mouse_downdelay",
             "mouse_liftdelay",
             "mouse_sleeptime",
@@ -61,7 +63,8 @@ class RegistryTest(unittest.TestCase):
             "mouse_slight": 0x0884,
             "mouse_motion": 0x0885,
             "rf_strengthen_switch": 0x08D8,
-            "low_power_warn_switch": 0x08D8,
+            "low_power_warn_switch": 0x08D9,
+            "low_power_warn_aux": 0x08DB,
             "mouse_downdelay": 0x08C0,
             "mouse_liftdelay": 0x08C1,
             "mouse_sleeptime": 0x08C2,
@@ -126,6 +129,68 @@ class RegistryTest(unittest.TestCase):
         )
 
 
+class RegistryDriftGuardTest(unittest.TestCase):
+    """Retro epic-1 F7 reconciliation guard.
+
+    FIELDS is the single address registry; parameters.PARAMS (§C, user-facing
+    names) and buttons.BUTTONS (D-section) re-express the same addresses.
+    These tests fail when either side changes an address without the other.
+    """
+
+    @staticmethod
+    def _absolute(field):
+        return (field.addr[1] << 8) | field.addr[0]
+
+    def test_alias_map_covers_exactly_the_param_names(self):
+        self.assertEqual(
+            set(settings.PARAM_FIELD_ALIASES), {p[0] for p in parameters.PARAMS}
+        )
+
+    def test_every_param_alias_points_to_the_same_address(self):
+        for param_name, field_name in settings.PARAM_FIELD_ALIASES.items():
+            with self.subTest(param=param_name):
+                offset = parameters._PARAM_BY_NAME[param_name][0]
+                self.assertIn(field_name, settings.FIELDS)
+                self.assertEqual(
+                    self._absolute(settings.FIELDS[field_name]),
+                    protocol.EEPROM_BANK0_BASE + offset,
+                )
+
+    def test_lift_off_and_mouse_slight_are_the_same_byte(self):
+        # Retro epic-3 F5: 0x0884 has one semantic (lift-off height slider);
+        # the dump name mouse_slight must never drift away from it.
+        self.assertEqual(
+            self._absolute(settings.FIELDS["mouse_slight"]),
+            protocol.EEPROM_BANK0_BASE + parameters._PARAM_BY_NAME["lift_off"][0],
+        )
+
+    def test_button_table_matches_fields_d_section(self):
+        button_fields = {
+            name
+            for name, field in settings.FIELDS.items()
+            if field.size == 4 and name.startswith("mouse_")
+        }
+        for name, offset in buttons.BUTTONS:
+            with self.subTest(button=name):
+                self.assertIn(name, button_fields)
+                self.assertEqual(
+                    self._absolute(settings.FIELDS[name]),
+                    protocol.EEPROM_BANK0_BASE + offset,
+                )
+                self.assertEqual(settings.FIELDS[name].size, 4)
+        self.assertEqual(len(buttons.BUTTONS), 13)
+
+    def test_sensor_mode_field_is_slot0_of_the_seven_slot_table(self):
+        absolute = self._absolute(settings.FIELDS["sensor_mode"])
+        self.assertEqual(absolute, protocol.EEPROM_BANK0_BASE + protocol.SENSOR_MODE)
+        self.assertEqual(
+            tuple(performance._addr(0)), settings.FIELDS["sensor_mode"].addr
+        )
+        last = protocol.EEPROM_BANK0_BASE + protocol.SENSOR_MODE + 6
+        bank_end = protocol.EEPROM_BANK0_END - 1
+        self.assertLessEqual(last, bank_end)
+
+
 class EncodeTest(unittest.TestCase):
     def test_uint_1byte_roundtrip(self):
         f = settings.FIELDS["dpi_current"]
@@ -151,9 +216,28 @@ class EncodeTest(unittest.TestCase):
         self.assertEqual(f.encode("VT7"), b"VT7" + b"\x00" * 13)
         self.assertEqual(f.decode(b"VT7" + b"\x00" * 13), "VT7")
 
-    def test_string_truncated_to_size(self):
+    def test_string_multibyte_fits_and_pads(self):
+        # é = 2 bytes: 8 × é fits exactly; 7 × é pads to 16.
         f = settings.FIELDS["config_name"]
-        self.assertEqual(len(f.encode("A" * 20)), 16)
+        self.assertEqual(len(f.encode("é" * 8)), 16)
+        self.assertEqual(
+            f.encode("é" * 7), ("é" * 7).encode("utf-8") + b"\x00" * 2
+        )
+
+    def test_string_oversize_rejected_not_truncated(self):
+        # Policy aligned with system.encode_name (retro epic-1 F6): oversize
+        # is refused instead of silently truncating mid-char / dropping the
+        # terminator.
+        f = settings.FIELDS["config_name"]
+        with self.assertRaises(ValueError):
+            f.encode("A" * 17)
+        with self.assertRaises(ValueError):
+            f.encode("é" * 9)  # 18 bytes
+
+    def test_string_embedded_nul_rejected(self):
+        f = settings.FIELDS["config_name"]
+        with self.assertRaises(ValueError):
+            f.encode("CF\x00G1")
 
     def test_string_null_trimmed(self):
         f = settings.FIELDS["config_name"]
@@ -180,6 +264,24 @@ class EncodeTest(unittest.TestCase):
     def test_unknown_type_rejected(self):
         with self.assertRaises(ValueError):
             Field((0x00, 0x06), type="nope").encode(1)
+
+
+class BaselineExistsTest(unittest.TestCase):
+    def test_explicit_path_controls_the_answer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "nope.json")
+            self.assertFalse(settings.baseline_exists(missing))
+            existing = os.path.join(tmp, "baseline.json")
+            with open(existing, "w") as f:
+                f.write("{}")
+            self.assertTrue(settings.baseline_exists(existing))
+
+    def test_default_path_falls_back_to_module_constant(self):
+        # No argument: the decision is made against EEPROM_BASELINE_PATH.
+        self.assertEqual(
+            settings.baseline_exists(),
+            os.path.exists(settings.EEPROM_BASELINE_PATH),
+        )
 
 
 if __name__ == "__main__":

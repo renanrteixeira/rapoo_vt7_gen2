@@ -48,17 +48,19 @@ class FakeDev:
     """RapooDevice stand-in for the factory-reset flow.
 
     read_eeprom returns `data` for an address (or synthetic address bytes);
-    query for RETURN_FACTORY_SETTINGS swaps `data` for the factory state (the
-    reset) and returns a plain ACK. The `before` reads happen before the query,
-    the `after` reads see the factory state.
+    send_command(RETURN_FACTORY_SETTINGS) swaps `data` for the factory state
+    (the reset) and queues a plain ACK that read_response returns. The
+    `before` reads happen before the send, the `after` reads see the factory
+    state.
     """
 
     def __init__(self, data=None, factory=None):
         self.path = "/dev/hidraw2"
         self.data = dict(data or {})
         self.factory = dict(factory or {})
-        self.queries = []
+        self.sent = []
         self.writes = []
+        self._pending = None
 
     def open(self):
         pass
@@ -78,12 +80,22 @@ class FakeDev:
         resp[protocol.EEPROM_DATA_OFFSET : protocol.EEPROM_DATA_OFFSET + len(data)] = data
         return bytes(resp)
 
-    def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
-        self.queries.append((cmd_id, args))
+    def send_command(self, cmd_id, args=(), prefix=None):
+        self.sent.append((cmd_id, bytes(args)))
         if cmd_id == protocol.RETURN_FACTORY_SETTINGS:
             self.data = dict(self.factory)
-            return ack_reply()
-        raise AssertionError("unexpected query cmd 0x%02X" % cmd_id)
+            self._pending = ack_reply()
+            return
+        raise AssertionError("unexpected send cmd 0x%02X" % cmd_id)
+
+    def read_response(self, cmd_id=None, timeout=1.0, capture_report7=()):
+        resp, self._pending = self._pending, None
+        return resp
+
+    def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
+        # Guard: the destructive 0xAD path must use send/read directly
+        # (single execution), never query()'s replay-on-timeout loop.
+        raise AssertionError("factory reset must not go through query()")
 
     def write_eeprom(self, addr, data):
         self.writes.append(((addr[1] << 8) | addr[0], bytes(data)))
@@ -104,22 +116,24 @@ class ShortDev:
 
 
 class NoAckDev(FakeDev):
-    """query answers the 0xAD with a non-ACK (empty) reply."""
+    """send_command(0xAD) queues a non-ACK (empty) reply."""
 
-    def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
-        self.queries.append(cmd_id)
-        resp = bytearray(32)
-        resp[0] = protocol.REPORT_CMD
-        resp[1] = protocol.RESP_EMPTY
-        return bytes(resp)
+    def send_command(self, cmd_id, args=(), prefix=None):
+        self.sent.append(cmd_id)
+        if cmd_id == protocol.RETURN_FACTORY_SETTINGS:
+            resp = bytearray(32)
+            resp[0] = protocol.REPORT_CMD
+            resp[1] = protocol.RESP_EMPTY
+            self._pending = bytes(resp)
+            return
+        raise AssertionError("unexpected send cmd 0x%02X" % cmd_id)
 
 
 class TimeoutDev(FakeDev):
-    """query raises CommandTimeout (mouse asleep / no response)."""
+    """The mouse never answers: read_response times out (returns None)."""
 
-    def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
-        self.queries.append(cmd_id)
-        raise CommandTimeout("no response")
+    def read_response(self, cmd_id=None, timeout=1.0, capture_report7=()):
+        return None
 
 
 class RebootDev(FakeDev):
@@ -131,13 +145,10 @@ class RebootDev(FakeDev):
         self.resets = 0
         self.fail_after_reset = 1
 
-    def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
-        self.queries.append((cmd_id, args))
+    def send_command(self, cmd_id, args=(), prefix=None):
+        super().send_command(cmd_id, args, prefix)
         if cmd_id == protocol.RETURN_FACTORY_SETTINGS:
-            self.data = dict(self.factory)
             self.resets += 1
-            return ack_reply()
-        raise AssertionError("unexpected query cmd 0x%02X" % cmd_id)
 
     def read_eeprom(self, addr, length=1):
         if self.resets and self.fail_after_reset:
@@ -153,13 +164,10 @@ class BoomDev(FakeDev):
         super().__init__(**kwargs)
         self.resets = 0
 
-    def query(self, cmd_id, args=(), timeout=1.0, prefix=None):
-        self.queries.append((cmd_id, args))
+    def send_command(self, cmd_id, args=(), prefix=None):
+        super().send_command(cmd_id, args, prefix)
         if cmd_id == protocol.RETURN_FACTORY_SETTINGS:
-            self.data = dict(self.factory)
             self.resets += 1
-            return ack_reply()
-        raise AssertionError("unexpected query cmd 0x%02X" % cmd_id)
 
     def read_eeprom(self, addr, length=1):
         if self.resets:
@@ -291,8 +299,8 @@ class FactoryResetTest(unittest.TestCase):
         dev = FakeDev(data=user_state(), factory=factory_state())
         result = system.factory_reset(dev)
         self.assertEqual(
-            dev.queries,
-            [(protocol.RETURN_FACTORY_SETTINGS, system.FACTORY_RESET_PAYLOAD)],
+            dev.sent,
+            [(protocol.RETURN_FACTORY_SETTINGS, bytes(system.FACTORY_RESET_PAYLOAD))],
         )
         self.assertEqual(dev.writes, [])
         self.assertTrue(result["acked"])
@@ -301,6 +309,15 @@ class FactoryResetTest(unittest.TestCase):
             result["after"],
             {"dpi_cur": 5, "rf_byte": 0, "sensor_mode": list(system.FACTORY_SENSOR_MODE)},
         )
+
+    def test_no_replay_on_timeout_single_execution(self):
+        # 0.AD is destructive: when the reply times out (mouse asleep) the
+        # command must NOT be re-sent (query() would replay it on the other
+        # interface). Exactly one send, then the localized timeout surfaces.
+        dev = TimeoutDev(data=user_state(), factory=factory_state())
+        with self.assertRaises(CommandTimeout):
+            system.factory_reset(dev)
+        self.assertEqual(len([s for s in dev.sent if s[0] == protocol.RETURN_FACTORY_SETTINGS]), 1)
 
     def test_non_ack_reply_raises_ack_error(self):
         dev = NoAckDev(data=user_state(), factory=factory_state())
@@ -414,8 +431,8 @@ class ProbeFactoryResetMainTest(unittest.TestCase):
         self.assertIn("ACKED", out.getvalue())
         self.assertIn("AFTER", out.getvalue())
         self.assertEqual(
-            dev.queries,
-            [(protocol.RETURN_FACTORY_SETTINGS, system.FACTORY_RESET_PAYLOAD)],
+            dev.sent,
+            [(protocol.RETURN_FACTORY_SETTINGS, bytes(system.FACTORY_RESET_PAYLOAD))],
         )
 
     def test_ack_error_prints_error_and_exits_nonzero(self):

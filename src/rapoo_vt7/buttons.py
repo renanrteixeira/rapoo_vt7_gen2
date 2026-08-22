@@ -8,18 +8,18 @@ read back the exact A Hub `method` byte-for-byte (left=03 00 01 00, DPI+=
 reversible write-test on 0x0634 wrote 07 00 00 00 -> re-read verified ->
 restored 0a 00 00 00 (MATCH).
 
-The method table comes from the A Hub chunk `keyPosition-D9HhW_CA.js`
-(downloaded to /tmp/opencode/ahub-chunks/). The type byte groups the
-function: 0x03 mouse button, 0x08 DPI, 0x09 fire/sniper, 0x0a config/DIY,
-0x0b/0x0c scroll, 0x07 disable, 0x04 media, 0x02 combo, 0x05 macro.
-Keyboard keys (`00 00 <HID> 00`, HID usage byte) and combos (`02 <key1>
-<modifier> <key2>`) and macros (`05 00 <slot> 00`) derive from the bundle and
-are shippable after their write formats are device-validated. `METHODS` is
-the picker offer list; `_DECODE_ONLY` labels read-backs (BLE left variant)
-without offering them.
+The method table comes from the A Hub chunks `keyPosition-D9HhW_CA.js` and
+`changeKey-uvZcd8Zo.js`. The type byte groups the function: 0x03 mouse
+button, 0x08 DPI, 0x09 fire/sniper, 0x0a config/DIY, 0x0b/0x0c scroll,
+0x07 disable, 0x04 media, 0x02 combo, 0x05 macro. Keyboard keys
+(`00 00 <HID> 00`, HID usage byte), combos (`02 <key1> <modifier> <key2>`)
+and macros (`05 00 <slot> 00`) are device-validated (2026-08-19: reversible
+write-tests on 0x0634 — kb_a, edit_copy, macro_5) and offered in the picker.
+The picker offer list = `METHODS` + `COMBO` + `KEYBOARD` + macro slots;
+`_DECODE_ONLY` labels read-backs that stay non-writable (BLE left variant).
 """
 
-from . import protocol
+from . import eeprom, protocol
 from .device import CommandTimeout
 
 # (name, bank0 offset) of every physical button, in address order.
@@ -43,12 +43,9 @@ _BUTTON_BY_NAME = dict(BUTTONS)
 
 # Confirmed 4-byte function methods, id -> bytes. Extracted from the A Hub
 # chunk `keyPosition-D9HhW_CA.js` (functions with a fixed 4-byte method).
-# This dict is what the "Botões" tab offers in the picker, so it only holds
-# functions whose write format is device-validated / a confirmed 4-byte
-# method. Keyboard keys (single HID usage byte), combos (0x02 prefix) and
-# macros (0x05 prefix) are NOT here: their write formats derive from the
-# bundle and stay gated until device-validated (spec "Ask First"). They are
-# decoded read-only via `_DECODE_ONLY`.
+# This dict is the "Funções" page of the picker dialog; the full offer list
+# also includes `COMBO`, `KEYBOARD` and the macro slots (all device-validated
+# on 2026-08-19 — see `function_method`).
 METHODS = {
     # mouse buttons (type 0x03)
     "mouse_left": bytes.fromhex("03000100"),
@@ -90,9 +87,9 @@ METHODS = {
 }
 
 # Methods that label read-backs but are NOT offered in the picker: the BLE
-# button's left-click variant (03 00 01 01, confirmed on-device) and the
-# bundle-derived combo (0x02) / macro (0x05) / keyboard (1-byte HID) codes,
-# gated until their write formats are device-validated.
+# button's left-click variant (03 00 01 01, confirmed on-device). Keyboard,
+# combo and macro codes left this map when their write formats were
+# device-validated (2026-08-19) and moved into the picker offer.
 _DECODE_ONLY = {
     "mouse_left_ble": bytes.fromhex("03000101"),
 }
@@ -396,19 +393,6 @@ for _slot in range(MACRO_SLOTS):
     _ID_BY_METHOD.setdefault(macro_method(_slot), "macro_%d" % _slot)
 
 
-def _addr(offset):
-    return tuple(protocol.eeprom_bank0(offset))
-
-
-def _read(dev, addr, length):
-    resp = dev.read_eeprom(addr, length)
-    if not hasattr(resp, "__len__"):
-        raise ValueError("invalid EEPROM reply")
-    if len(resp) < protocol.EEPROM_DATA_OFFSET + length:
-        raise ValueError("short EEPROM reply")
-    return bytes(resp[protocol.EEPROM_DATA_OFFSET : protocol.EEPROM_DATA_OFFSET + length])
-
-
 def button_addr(name):
     """Absolute bank-0 address of a button as a hex string."""
     return "0x{:04X}".format(protocol.EEPROM_BANK0_BASE + _BUTTON_BY_NAME[name])
@@ -450,7 +434,7 @@ def read_button(dev, name):
     `method` is the raw 4 bytes, `fn` the function id (or None for an
     unknown/raw method, shown as hex). Raises ValueError on a short reply.
     """
-    raw = _read(dev, _addr(_BUTTON_BY_NAME[name]), 4)
+    raw = eeprom.read_bytes(dev, eeprom.bank0(_BUTTON_BY_NAME[name]), 4)
     if len(raw) != 4:
         raise ValueError("short button reply for %s" % name)
     return {
@@ -481,9 +465,12 @@ def read_section(dev):
 
 
 def _other_is_left(dev, name):
-    """True when another button reads back as left-click; False when the read
-    fails (a flaky field must not block the ≥1-left rule, only a confirmed
-    left elsewhere allows the remap away from left-click)."""
+    """True only when the other button CONFIRMEDLY reads back left-click.
+
+    Any read failure also returns False, which makes the ≥1-left rule REFUSE
+    the remap (fail-closed): the last left-click is never removed based on
+    missing data — the user retries when reads succeed.
+    """
     try:
         return is_left_click(read_button(dev, name)["method"])
     except (ValueError, CommandTimeout, OSError):
@@ -535,13 +522,13 @@ def set_function(dev, name, fn_id, keep_left=True):
         raise UnknownFunctionError(fn_id)
     if name not in _BUTTON_BY_NAME:
         raise ValueError("unknown button %r" % name)
-    addr = _addr(_BUTTON_BY_NAME[name])
-    current = _read(dev, addr, 4)
+    addr = eeprom.bank0(_BUTTON_BY_NAME[name])
+    current = eeprom.read_bytes(dev, addr, 4)
     if keep_left and is_left_click(current) and not is_left_click(method):
         # The button being remapped away from left-click is only allowed when
-        # at least one other button keeps left-click. A failed read of an
-        # other button counts as "no left elsewhere" (a broken/flaky field
-        # must not block the rule) — the write is refused rather than aborted.
+        # at least one other button KEEPS left-click. A failed read of an
+        # other button counts as "no left elsewhere" (fail-closed): the write
+        # is refused — never allowed on missing data.
         others_left = any(
             other != name and _other_is_left(dev, other)
             for other, _offset in BUTTONS

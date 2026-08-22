@@ -62,3 +62,18 @@ context:
 ## Spec Change Log
 
 - 2026-08-11 — created spec file after confirming the feature is implemented and the epic is marked done.
+- 2026-08-20 (retro reconciliation, epic-2 retro F4 — doc-only): records three
+  drifts between this frozen text and the shipped feature, none a defect:
+  1. **AC3 sentence was inverted.** As written ("preserves the current DPI if
+     the edited gear is current") it reads backwards. The as-built semantics
+     (`dpi.set_value`): editing the CURRENT gear applies in place (its slot
+     holds the DPI in use, so the change takes effect immediately); editing
+     any OTHER gear only stores the value (`dpi_stored` vs `dpi_edited`
+     notifications). No reorder, no re-select either way.
+  2. **Surface moved from tray to window.** The title says "systray menu";
+     as built, DPI status/control lives in the window's "DPI" tab (the tray
+     DPI submenu was removed when the tab shipped).
+  3. **Scope grew beyond status + switch + edit.** The story also delivered
+     add/delete from the button cycle with A Hub `setDeviceGears` semantics
+     (`set_gears`/`add_gear`/`delete_gear`, sorted-on-add, current gear
+     follows its value across reorders) — validated on device 2026-08-12.

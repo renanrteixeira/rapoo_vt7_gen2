@@ -156,10 +156,19 @@ SENSOR_MODE = 0x02DC            # 0x08DC performance mode (0..5)
 # The byte is a bit mask: bit 0 = RF strengthen (0 adaptive/smart, 1 maximum
 # RF) and bit 1 = low-battery light warning (0 off, 1 on). Per-field writes
 # must use a masked write and preserve the unrelated bits.
-RF_STRENGTHEN_SWITCH = 0x02D8   # 0x08D8 smart/full RF (bit mask, bit 0)
-LOW_POWE_WARN_SWITCH = 0x02D8   # 0x08D8 low battery warning (same byte, bit 1)
+# RF strategy / low-power warning (P9 device diff, 2026-08-20): the two
+# features live in DISTINCT bytes — the old shared-byte hypothesis
+# ("warning = bit 1 of 0x08D8") was refuted on hardware. RF Maximum flipped
+# only bit 0 of 0x08D8; the A Hub warning toggle writes 0x08D9 (00/01) AND
+# 0x08DB (FF/0F, semantics unresolved) and never touches 0x08D8.
+RF_STRENGTHEN_SWITCH = 0x02D8   # 0x08D8 smart/full RF (bit 0; device-confirmed)
+LOW_POWE_WARN_SWITCH = 0x02D9   # 0x08D9 low battery warning state (00 off / 01 on)
+LOW_POWE_WARN_AUX = 0x02DB      # 0x08DB tracks the toggle (FF off / 0F on)
 RF_STRENGTHEN_MASK = 0x01
-LOW_POWE_WARN_MASK = 0x02
+LOW_POWE_WARN_ON = 0x01
+LOW_POWE_WARN_OFF = 0x00
+LOW_POWE_WARN_AUX_ON = 0x0F
+LOW_POWE_WARN_AUX_OFF = 0xFF
 
 # Mouse parameters (docs/FEATURES.md C)
 MOUSE_DOWNDELAY = 0x02C0        # 0x08C0 press debounce
