@@ -110,13 +110,17 @@ FIELDS = {
     # exists for the raw dump; the semantic owner is parameters.py.
     "mouse_slight": Field(_addr(protocol.MOUSE_SLIGHT)),
     "mouse_motion": Field(_addr(protocol.MOUSE_MOTION)),
-    # RF strategy and low-power warning SHARE one EEPROM byte at 0x08D8
-    # (RF_STRENGTHEN_SWITCH and LOW_POWE_WARN_SWITCH are the same address).
-    # Reads are identical; writes are bit-masked (protocol.RF_STRENGTHEN_MASK /
-    # LOW_POWE_WARN_MASK) so one field never zeroes the other's bits, and they
-    # must be confirmed by re-reading the byte.
+    # RF strategy (0x08D8, bit 0) and low-power warning (0x08D9) are DISTINCT
+    # bytes — P9 device diff 2026-08-20 refuted the shared-byte hypothesis.
+    # Writes go through performance.write_rf_strengthen / write_low_power_warn
+    # (masked write for the D8 bit; plain verified writes for D9) and must be
+    # confirmed by re-reading.
     "rf_strengthen_switch": Field(_addr(protocol.RF_STRENGTHEN_SWITCH)),
     "low_power_warn_switch": Field(_addr(protocol.LOW_POWE_WARN_SWITCH)),
+    # Aux byte that tracks the warning toggle in-session (FF off / 0F on);
+    # standalone semantics unresolved (P9, 2026-08-20). Registered so dumps
+    # and --status capture it alongside its state byte.
+    "low_power_warn_aux": Field(_addr(protocol.LOW_POWE_WARN_AUX)),
     # C. Mouse parameters
     "mouse_downdelay": Field(_addr(protocol.MOUSE_DOWNDELAY)),
     "mouse_liftdelay": Field(_addr(protocol.MOUSE_LIFTDELAY)),

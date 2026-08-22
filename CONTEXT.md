@@ -299,11 +299,12 @@ captured before any write.
       rules per slot); `tests/test_performance.py` (12 tests). **VALIDATED on
       the real device 2026-08-11**: factory table `[0,0,1,1,3,3,3]`, rate
       `0x0880`=1→slot 3, write+readback of slot 3 (1→4→1) restored, rate-code
-      write mirrored by rpt_usb. **RF strategy + polling rate (story 3-2)
-      DONE**: shared byte `0x08D8` (bit0 RF strengthen, bit1 low-power warning)
-      with masked writes + readback verify (`read_rf`/`write_rf_*`), rate-code→
-      slot map `125→8 … 8000→129` from `rpt_usb` (`rate_index_from_code`),
-      RF toggles + state in the Desempenho tab. **§C parameters (story 3-3)
+      write mirrored by rpt_usb.       **RF strategy + polling rate (story 3-2) DONE**: RF = bit 0 of `0x08D8`,
+      low-power warning on its OWN byte `0x08D9` + aux `0x08DB` (**P9 ampliado
+      2026-08-20 refuted the shared-byte/bit-1 hypothesis via A Hub
+      write-diffs**; `write_low_power_warn` mirrors D9 01/00 + DB 0F/FF),
+      rate-code→slot map `125→8 … 8000→129` from `rpt_usb`
+      (`rate_index_from_code`), RF toggles + state in the Desempenho tab. **§C parameters (story 3-3)
       DONE** (`parameters.py`): confirmed bool toggles motion_sync `0x0885`,
       glass `0x08C5`, DC switch `0x08DA` (write-test 2026-08-11, all 11 §C
       bytes read→write→re-read→restore); debounce 0x08C0/0x08C1, sleep time,
@@ -341,14 +342,15 @@ captured before any write.
       (rate list + `PERF_SELECTABLE` — matches ours byte-for-byte; mode cards
       `id:5..0` → names already reversed correctly). **A Hub hides Glass/DC
       for the VT7 but we keep both toggles** (bytes writable/sticky on
-      hardware; difference annotated in FEATURES.md §2.C). Debounce/sleep/
-      angle byte maps are our inference (defaults agree); definitive = diff
-      an A Hub write (P9).
+      hardware; difference annotated in FEATURES.md §2.C). **Byte maps
+      device-confirmed (P9 ampliado, 2026-08-20)**: debounce bytes = ms,
+      sleep = min, angle = two's-complement signed, lift-off = 1..11 ↔
+      1.0–2.0 mm (A Hub write-diffs; our inference matched every value).
       **B3 CLOSED (2026-08-19)**: all sub-features implemented, unit-tested
       and validated on the real device (modes/RF/rate 2026-08-11, §C write-test
-      2026-08-11, selectable sliders 2026-08-12). Single follow-up: **P9** —
-      diff an A Hub write to definitively confirm the debounce/sleep/angle
-      byte maps.
+      2026-08-11, selectable sliders 2026-08-12). Follow-up **P9 ampliado
+      CLOSED (2026-08-20)**: A Hub write-diff session confirmed all byte maps
+      + the RF/warning byte layout (tools/p9_read.py, tools/p9_scan.py).
 - [x] **B4** Button remap (extract function codes from the bundle)
       — done (story 4-1): each of the 13 buttons has a bank-0 EEPROM field
       (`0x0600`–`0x0638`) storing a **4-byte method** `<type><p1><p2><p3>`,

@@ -1,5 +1,5 @@
 generated: 08-10-2026 20:13
-last_updated: 08-20-2026 21:57
+last_updated: 08-20-2026 22:48
 project: rapoo_vt7_gen2
 project_key: NOKEY
 tracking_system: file-system
@@ -254,7 +254,7 @@ action_items:
     action: "P9 ampliado: diff de escrita no A Hub para cravar mapas debounce/sleep/angulo/lift-off
       E bit-layout do 0x08D8 (uma sessao; Ask First on device)"
     owner: ""
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-3-retro-08-20-2026.md"
   - id: "F3"
     epic: 3

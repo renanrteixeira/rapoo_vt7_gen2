@@ -210,3 +210,26 @@ The RF/polling-rate story is intentionally a state/exposure story: it should mak
 
 - probe shared-byte hypothesis decoding.
   [`test_probe.py:213`](../../tests/test_probe.py#L213)
+
+## Change log
+
+### 2026-08-20 — P9 ampliado: shared-byte premise REFUTED on device
+
+The A Hub write-diff session (user-assisted, tools/p9_read.py + p9_scan.py
+snapshots) refuted the core "shared byte 0x08D8" assumption this spec was
+built on:
+
+- RF strategy = **bit 0 of `0x08D8`** (Maximum → 0x01); no other bit moved.
+- Low-power warning does NOT live in D8 bit 1: the A Hub warning toggle wrote
+  its own state byte **`0x08D9`** (00 off / 01 on) AND an aux byte **`0x08DB`**
+  (FF off / 0F on, standalone semantics unresolved) and never touched 0x08D8.
+- Same session confirmed the §C byte maps: press/release debounce = ms,
+  sleep = min, angle = two's-complement signed, lift-off = 1..11 ↔ 1.0–2.0 mm.
+
+Code updated accordingly (`protocol.py`, `performance.py`, `settings.py`,
+`tools/probe.py`): `read_rf` reads D8+D9; `write_rf_strengthen` keeps a masked
+bit-0 write on D8; `write_low_power_warn` writes+verifies D9=01/00 and
+DB=0F/FF (mirroring A Hub output) without touching D8. The original
+specification text above is preserved as history — the shared-byte/masked-
+sibling-bit requirements are superseded by this change log. Device restored
+byte-exact after the session (baseline diff = 0).

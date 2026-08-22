@@ -158,9 +158,9 @@ def button_fields():
 def build_status(dev, report7_window=6.0):
     """Reads every registered EEPROM field (settings.FIELDS) and returns a
     JSON-ready dict: per-field addr/raw/decoded value, the format-hypothesis
-    block (4-byte button methods, shared 0x08D8 bit mask) and the
-    passive-report-7 cross-validation section. Raises CommandTimeout if the
-    mouse does not answer and ValueError on a short reply."""
+    block (4-byte button methods, RF bit of 0x08D8 + warning byte 0x08D9) and
+    the passive-report-7 cross-validation section. Raises CommandTimeout if
+    the mouse does not answer and ValueError on a short reply."""
     by_addr = {}
     for name, field in settings.FIELDS.items():
         size = field.size
@@ -203,11 +203,12 @@ def build_status(dev, report7_window=6.0):
 def build_hypothesis(raw_by_addr):
     """Emits the format hypotheses: the 4-byte button fields (0x0600-0x0638)
     print the raw method plus its decoded A Hub function (or hex when
-    unknown), the shared 0x08D8 byte (RF strategy + low-power warning) prints
-    a bit breakdown, the toggle fields print a bit breakdown, and every
-    Section-C mouse parameter prints its confirmed value semantics (bool
-    toggle vs read-only raw byte). Uses the bytes already read by
-    build_status, so no field is read twice."""
+    unknown), the RF block prints the strategy bit of 0x08D8 plus the
+    separate low-power-warning byte 0x08D9 (P9 device diff, 2026-08-20 — the
+    old shared-byte/bit-mask hypothesis was refuted on hardware), the toggle
+    fields print a bit breakdown, and every Section-C mouse parameter prints
+    its confirmed value semantics (bool toggle vs read-only raw byte). Uses
+    the bytes already read by build_status, so no field is read twice."""
     buttons = []
     for name, addr in button_fields():
         method = raw_by_addr[addr][:4]
@@ -221,14 +222,18 @@ def build_hypothesis(raw_by_addr):
             }
         )
 
-    shared_addr = tuple(protocol.eeprom_bank0(protocol.RF_STRENGTHEN_SWITCH))
-    raw = raw_by_addr[shared_addr]
-    shared = {
-        "addr": "0x{:04X}".format((shared_addr[1] << 8) | shared_addr[0]),
-        "raw": raw[0],
-        "bits": "0b{:08b}".format(raw[0]),
-        "rf_strengthen_switch": bool(raw[0] & protocol.RF_STRENGTHEN_MASK),
-        "low_power_warn_switch": bool(raw[0] & protocol.LOW_POWE_WARN_MASK),
+    rf_addr = tuple(protocol.eeprom_bank0(protocol.RF_STRENGTHEN_SWITCH))
+    warn_addr = tuple(protocol.eeprom_bank0(protocol.LOW_POWE_WARN_SWITCH))
+    rf_raw = raw_by_addr[rf_addr][0]
+    warn_raw = raw_by_addr[warn_addr][0]
+    rf = {
+        "addr": "0x{:04X}".format((rf_addr[1] << 8) | rf_addr[0]),
+        "raw": rf_raw,
+        "bits": "0b{:08b}".format(rf_raw),
+        "rf_strengthen_switch": bool(rf_raw & protocol.RF_STRENGTHEN_MASK),
+        "warn_addr": "0x{:04X}".format((warn_addr[1] << 8) | warn_addr[0]),
+        "warn_raw": warn_raw,
+        "low_power_warn_switch": warn_raw == protocol.LOW_POWE_WARN_ON,
     }
 
     toggles = []
@@ -268,7 +273,7 @@ def build_hypothesis(raw_by_addr):
         )
     return {
         "buttons": buttons,
-        "shared_0x08D8": shared,
+        "rf": rf,
         "toggles": toggles,
         "params": params,
     }
@@ -382,13 +387,19 @@ def print_status(status):
                 "  (left-click)" if b["left_click"] else "",
             )
         )
-    s = status["hypothesis"]["shared_0x08D8"]
+    s = status["hypothesis"]["rf"]
     print(
-        "  shared 0x08D8 {}  raw={} bits={}  rf_strengthen_switch={} low_power_warn_switch={}".format(
+        "  RF {}  raw={} bits={}  rf_strengthen_switch={}".format(
             s["addr"],
             s["raw"],
             s["bits"],
             "on" if s["rf_strengthen_switch"] else "off",
+        )
+    )
+    print(
+        "  low-power warning {}  raw={:02X}  low_power_warn_switch={}".format(
+            s["warn_addr"],
+            s["warn_raw"],
             "on" if s["low_power_warn_switch"] else "off",
         )
     )
