@@ -31,7 +31,14 @@ light/dark/**system** resolution (`system` follows the GTK dark preference),
 persisted in `config.py` alongside `language`; the window has a persistent
 **device header** (battery/mode/DPI/rate chips + theme combo) and card-wrapped
 sections (`_card_wrap`); the tray adds a **muted DPI/rate** info row. Theme/DPi
-header state is separate label vs value (crash-regression fixed). Headless
+header state is separate label vs value (crash-regression fixed). **Crash fix
+(2026-08-28, commit d988e22)**: `_card_wrap` returns a `Gtk.Frame` (no
+`pack_start`); rebinding `page1`/`page2` to it crashed
+`BatteryWindow.__init__` (`AttributeError: 'Frame' has no 'pack_start'`) so the
+window never opened and `do_startup` left `_window`/`_monitor` unset — also
+breaking "Sair". Fixed by applying the wrap inline in `append_page` and keeping
+the `pageN` vbox (aligned with the scrollable pages 3–6); structural regression
+tests `CardWrapLayoutTest` pin it. Headless
 tests in `tests/test_theme.py` (14). Review patches P1-P6 applied; deferrals
 D1-D4 in `_bmad-output/implementation-artifacts/deferred-work.md`. **Phase 2 DONE**: the
 window is organized in **tabs** (Bateria | DPI): tab 1 = elegant mouse image +
