@@ -24,7 +24,16 @@ cython-hidapi lib cannot open the device; see section 4).
 connection mode, DPI, rate — validated: USB/charging/82%), icon with % and
 charging bolt, low battery notification (20%/10%), menu with "Refresh now",
 last read time and "asleep" state. Supports both connections (2.4G + USB cable).
-Autostart (A7) and uninstall (A8) implemented and tested. **Phase 2 DONE**: the
+Autostart (A7) and uninstall (A8) implemented and tested. **UI redesign DONE
+(2026-08-27, `feat/ui-redesign`, spec `_bmad-output/.../spec-ui-redesign.md`)**:
+a token-based **CSS theme** (`theme.py` + `assets/rapoo-vt7.css`) with
+light/dark/**system** resolution (`system` follows the GTK dark preference),
+persisted in `config.py` alongside `language`; the window has a persistent
+**device header** (battery/mode/DPI/rate chips + theme combo) and card-wrapped
+sections (`_card_wrap`); the tray adds a **muted DPI/rate** info row. Theme/DPi
+header state is separate label vs value (crash-regression fixed). Headless
+tests in `tests/test_theme.py` (14). Review patches P1-P6 applied; deferrals
+D1-D4 in `_bmad-output/implementation-artifacts/deferred-work.md`. **Phase 2 DONE**: the
 window is organized in **tabs** (Bateria | DPI): tab 1 = elegant mouse image +
 battery status + language selection; tab 2 = "DPI" section: a list of the
 ACTIVE gears (radio per gear, selects the current; X value spin per gear;

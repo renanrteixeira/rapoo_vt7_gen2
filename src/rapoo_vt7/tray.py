@@ -27,6 +27,8 @@ class Tray:
         self._known = False
         self._asleep = False
         self._last = None
+        self._dpi = None
+        self._rate = None
 
         self.indicator = AyatanaAppIndicator3.Indicator.new(
             "rapoo-vt7-battery",
@@ -45,11 +47,18 @@ class Tray:
 
         self.status_item = Gtk.MenuItem(label=self._t("battery_unknown"))
         self.status_item.set_sensitive(False)
+        self.status_item.get_style_context().add_class("tray-muted")
         self.menu.append(self.status_item)
 
         self.detail_item = Gtk.MenuItem(label="")
         self.detail_item.set_sensitive(False)
+        self.detail_item.get_style_context().add_class("tray-muted")
         self.menu.append(self.detail_item)
+
+        self.dpi_item = Gtk.MenuItem(label="")
+        self.dpi_item.set_sensitive(False)
+        self.dpi_item.get_style_context().add_class("tray-muted")
+        self.menu.append(self.dpi_item)
         self.menu.append(Gtk.SeparatorMenuItem())
 
         self.item_refresh = Gtk.MenuItem(label=self._t("refresh_now"))
@@ -110,6 +119,26 @@ class Tray:
             parts.append({0: "2.4G", 1: "Bluetooth", 2: "USB"}[mode])
         parts.append(t["last_read"].format(time=time.strftime("%H:%M")))
         self.detail_item.set_label(" · ".join(parts))
+        self._render_dpi()
+
+    def _render_dpi(self):
+        dpi, rate = self._dpi, self._rate
+        if dpi is not None and rate is not None:
+            self.dpi_item.set_label(
+                self._t("tray_dpi").format(x=dpi, rate=rate)
+            )
+        elif dpi is not None:
+            self.dpi_item.set_label(self._t("header_dpi").format(x=dpi))
+        else:
+            self.dpi_item.set_label("--")
+
+    def set_dpi(self, dpi, rate=None):
+        """Additive (non-frozen) setter feeding the current DPI value + polling
+        rate (Hz) into the tray's informational DPI row. `rate=None` keeps the
+        row as DPI-only."""
+        self._dpi = dpi
+        self._rate = rate
+        self._render_dpi()
 
     def set_unknown(self):
         self._known = False
