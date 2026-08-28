@@ -530,6 +530,7 @@ python3 tools/probe.py
 | Commands return empty | mouse asleep | move the mouse (see P1) |
 | Icon does not appear | appindicators extension | enable it in Extensions |
 | "busy" when opening hidraw | another process on the interface | close other apps (e.g. A Hub) |
+| `libpthread.so.0: undefined symbol: __libc_pthread_init` | launching from a terminal inside the VS Code snap (injects LOCPATH/GTK_PATH/GSETTINGS_SCHEMA_DIR/XDG_\*/PYTHONSTARTUP into core20) | `run.sh` now unsets those and restores system `XDG_DATA_DIRS` (fix 992a085); run `./run.sh` from any terminal |
 
 ---
 
