@@ -1,0 +1,111 @@
+/* Rapoo VT7 — themed stylesheet.
+ *
+ * Branches on a root style class (`window.theme-light` / `window.theme-dark`)
+ * applied by `theme.apply_theme`. All colors come from `@theme_*` named
+ * colors injected by `theme.build_css` from the single token table, so both
+ * themes stay in sync.
+ */
+
+/* ---- window background / base ---- */
+.window-root {
+    background-color: @theme_bg;
+    color: @theme_fg;
+}
+
+/* ---- persistent device header ---- */
+.device-header {
+    background-color: @theme_card_bg;
+    border-bottom: 1px solid @theme_card_border;
+    padding: 6px 10px;
+}
+
+.device-header .header-chip {
+    background-color: @theme_accent_soft;
+    border: 1px solid @theme_card_border;
+    border-radius: 10px;
+    padding: 1px 8px;
+    color: @theme_fg;
+    font-weight: bold;
+}
+
+.device-header .header-chip.batt {
+    color: @theme_accent;
+}
+
+.device-header .header-label {
+    color: @theme_muted;
+    font-weight: normal;
+    padding-right: 2px;
+}
+
+/* ---- cards ---- */
+.card {
+    background-color: @theme_card_bg;
+    border: 1px solid @theme_card_border;
+    border-radius: 12px;
+    padding: 10px;
+}
+
+.card-title {
+    color: @theme_fg;
+    font-weight: bold;
+}
+
+.card-title.accent {
+    color: @theme_accent;
+}
+
+.card-hint {
+    color: @theme_muted;
+}
+
+/* ---- danger cards (pairing / factory reset) ---- */
+.card.danger {
+    border-color: @theme_danger;
+    background-color: mix(@theme_bg, @theme_danger_soft, 0.6);
+}
+
+.card.danger .card-title {
+    color: @theme_danger;
+}
+
+/* ---- status/detail labels ---- */
+.status-label {
+    color: @theme_fg;
+}
+
+.muted {
+    color: @theme_muted;
+}
+
+/* ---- sidebar / tab labels ---- */
+.theme-tab {
+    color: @theme_fg;
+}
+
+/* ---- buttons (ghost / primary) ---- */
+button.ghost {
+    background-color: transparent;
+    border: 1px solid @theme_card_border;
+    color: @theme_fg;
+    border-radius: 8px;
+}
+
+button.primary {
+    background-color: @theme_accent;
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+}
+
+button.danger-btn {
+    background-color: transparent;
+    border: 1px solid @theme_danger;
+    color: @theme_danger;
+    border-radius: 8px;
+}
+
+/* ---- tray muted info rows ---- */
+.tray-muted {
+    color: @theme_muted;
+}

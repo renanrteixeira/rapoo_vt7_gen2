@@ -12,6 +12,7 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import GLib, Gtk, Gdk, GdkPixbuf
 
 from . import buttons, dpi, i18n, parameters, performance as perf
+from . import theme as theme_mod
 from . import __version__ as APP_VERSION
 from .pairing_session import (
     STATUS_CANCELLED,
@@ -412,6 +413,8 @@ class BatteryWindow:
         self,
         lang="pt_BR",
         on_lang_change=None,
+        theme="system",
+        on_theme_change=None,
         application=None,
         on_switch_gear=None,
         on_add_gear=None,
@@ -432,6 +435,8 @@ class BatteryWindow:
     ):
         self._lang = lang if lang in i18n.LANGS else "pt_BR"
         self._on_lang_change = on_lang_change
+        self._on_theme_change = on_theme_change
+        self._theme = theme if theme in ("light", "dark", "system") else "system"
         self._on_switch_gear = on_switch_gear
         self._cb_add_gear = on_add_gear
         self._cb_delete_gear = on_delete_gear
@@ -451,6 +456,10 @@ class BatteryWindow:
         self._known = False
         self._asleep = False
         self._last = None
+        # Persistent device header state (battery/mode come from `_last`;
+        # DPI/rate are fed separately by the app from the monitor/report 7).
+        self._header_dpi = None
+        self._header_rate = None
         self._dpi = None
         self._dpi_error = None
         self._dpi_timers = {}
@@ -481,21 +490,34 @@ class BatteryWindow:
             self._win = Gtk.Window()
         self._win.set_icon_name("rapoo-vt7")
         self._win.set_title(self._t("window_title"))
-        self._win.set_default_size(380, 520)
+        self._win.set_default_size(400, 540)
         self._win.set_position(Gtk.WindowPosition.CENTER)
         self._win.connect("delete-event", self._on_close)
+        # Root style classes: `window-root` for the base palette + `theme-*`
+        # so the single stylesheet branches on the effective theme.
+        wr = self._win.get_style_context()
+        wr.add_class("window-root")
+        theme_mod.apply_theme(self._win, self._theme)
 
-        # Two tabs: Battery (image + info + language) | DPI settings.
+        # Root box: persistent device header on top + the tabbed notebook.
+        self._root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._win.add(self._root_box)
+        self._build_header()
+        self._root_box.pack_start(self._header, False, False, 0)
+
+        # Six tabs: Battery (image + info) | DPI | Performance | Params |
+        # Buttons | System. The Gtk.Notebook is kept (Ask-First constraint).
         self._notebook = Gtk.Notebook()
         self._tab_battery = Gtk.Label(label=self._t("tab_battery"))
         self._tab_dpi = Gtk.Label(label=self._t("tab_dpi"))
-        self._win.add(self._notebook)
+        self._root_box.pack_start(self._notebook, True, True, 0)
 
         page1 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         page1.set_margin_top(16)
         page1.set_margin_bottom(16)
         page1.set_margin_start(16)
         page1.set_margin_end(16)
+        page1 = self._card_wrap(page1)
         self._notebook.append_page(page1, self._tab_battery)
 
         page2 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -503,6 +525,7 @@ class BatteryWindow:
         page2.set_margin_bottom(16)
         page2.set_margin_start(16)
         page2.set_margin_end(16)
+        page2 = self._card_wrap(page2)
         self._notebook.append_page(page2, self._tab_dpi)
 
         self._area = Gtk.DrawingArea()
@@ -545,7 +568,7 @@ class BatteryWindow:
         page3.set_margin_bottom(16)
         page3.set_margin_start(16)
         page3.set_margin_end(16)
-        page3_scroll.add(page3)
+        page3_scroll.add(self._card_wrap(page3))
         self._tab_perf = Gtk.Label(label=self._t("tab_perf"))
         self._notebook.append_page(page3_scroll, self._tab_perf)
         self._build_perf_section(page3)
@@ -557,7 +580,7 @@ class BatteryWindow:
         page4.set_margin_bottom(16)
         page4.set_margin_start(16)
         page4.set_margin_end(16)
-        page4_scroll.add(page4)
+        page4_scroll.add(self._card_wrap(page4))
         self._tab_params = Gtk.Label(label=self._t("tab_params"))
         self._notebook.append_page(page4_scroll, self._tab_params)
         self._build_params_section(page4)
@@ -569,7 +592,7 @@ class BatteryWindow:
         page5.set_margin_bottom(16)
         page5.set_margin_start(16)
         page5.set_margin_end(16)
-        page5_scroll.add(page5)
+        page5_scroll.add(self._card_wrap(page5))
         self._tab_buttons = Gtk.Label(label=self._t("tab_buttons"))
         self._notebook.append_page(page5_scroll, self._tab_buttons)
         self._build_buttons_section(page5)
@@ -581,7 +604,7 @@ class BatteryWindow:
         page6.set_margin_bottom(16)
         page6.set_margin_start(16)
         page6.set_margin_end(16)
-        page6_scroll.add(page6)
+        page6_scroll.add(self._card_wrap(page6))
         self._tab_system = Gtk.Label(label=self._t("tab_system"))
         self._notebook.append_page(page6_scroll, self._tab_system)
         # Connected after every page is appended: the construction-time
@@ -594,6 +617,119 @@ class BatteryWindow:
 
     def _t(self, key):
         return i18n.LANGS[self._lang][key]
+
+    @staticmethod
+    def _card_wrap(inner):
+        """Wraps a section vbox in a styled card `Gtk.Frame`.
+
+        The golden card wrapper keeps the widget tree test-safe (a plain
+        Frame + inner Box, children unchanged); every section builder keeps
+        packing into the SAME vbox it was given.
+        """
+        card = Gtk.Frame()
+        card.get_style_context().add_class("card")
+        card.add(inner)
+        return card
+
+    def _build_header(self):
+        """Persistent device header (visible on every tab): battery chip,
+        connection mode, current DPI + polling rate, and the theme selector.
+
+        Non-editable; each field degrades independently to "--" (the
+        version-row philosophy — no error banners). Battery + mode are
+        refreshed by `_render`; DPI + rate by `update_header`.
+        """
+        self._header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._header.get_style_context().add_class("device-header")
+
+        self._header_batt = Gtk.Label(label=self._t("battery_unknown"))
+        self._header_batt.get_style_context().add_class("header-chip")
+        self._header_batt.get_style_context().add_class("batt")
+        self._header.pack_start(self._header_batt, False, False, 0)
+
+        self._header_mode = Gtk.Label()
+        self._header_mode.get_style_context().add_class("muted")
+        self._header.pack_start(self._header_mode, False, False, 0)
+
+        spacer = Gtk.Label()
+        spacer.set_hexpand(True)
+        self._header.pack_start(spacer, True, True, 0)
+
+        # Value state (`_header_dpi`/`_header_rate`) is separate from the
+        # label widgets (`_header_dpi_label`/`_header_rate_label`): feeding a
+        # new DPI/rate via `update_header` must never clobber the widget refs
+        # that `_render_header` sets text on.
+        self._header_dpi = None
+        self._header_rate = None
+
+        self._header_dpi_label = Gtk.Label(label="--")
+        self._header_dpi_label.get_style_context().add_class("header-chip")
+        self._header.pack_start(self._header_dpi_label, False, False, 0)
+
+        self._header_rate_label = Gtk.Label(label="--")
+        self._header_rate_label.get_style_context().add_class("header-chip")
+        self._header.pack_start(self._header_rate_label, False, False, 0)
+
+        self._theme_label = Gtk.Label(label=self._t("theme_label"))
+        self._theme_label.get_style_context().add_class("muted")
+        self._header.pack_start(self._theme_label, False, False, 0)
+
+        self._theme_combo = Gtk.ComboBoxText()
+        for code in theme_mod.VALID_THEMES:
+            self._theme_combo.append(code, self._theme_name(code))
+        self._theme_combo.set_active_id(self._theme)
+        self._theme_combo.set_tooltip_text(self._t("theme_tooltip"))
+        self._theme_combo.connect("changed", self._on_theme_changed)
+        self._header.pack_start(self._theme_combo, False, False, 0)
+
+    def _theme_name(self, code):
+        return self._t("theme_" + code)
+
+    def _on_theme_changed(self, combo):
+        code = combo.get_active_id()
+        if code not in theme_mod.VALID_THEMES or code == self._theme:
+            return
+        self._theme = code
+        theme_mod.apply_theme(self._win, code)
+        if self._on_theme_change:
+            self._on_theme_change(code)
+
+    def update_header(self, dpi=None, rate=None):
+        """GTK thread. Feeds the current DPI value + polling rate (Hz) into the
+        persistent header; None keeps the field as "--". Independent of
+        `_render`/`_on_lang_changed` (the acceptance-3 path)."""
+        self._header_dpi = dpi
+        self._header_rate = rate
+        self._render_header()
+
+    def _render_header(self):
+        """Renders the header from the stored state (`_last` + DPI/rate),
+        degrading each field independently to "--". Defensive over partial
+        __new__-based window builds (unit tests that call `_render` but never
+        constructed the header): no-op when the header widgets are absent."""
+        if not hasattr(self, "_header_batt"):
+            return
+        if self._known and self._last is not None:
+            pct, charging, mode = self._last
+            text = "%d%%" % pct
+            if charging:
+                text += " \u26A1"
+            self._header_batt.set_text(text)
+            mode_text = i18n.MODES.get(mode, "--") if mode is not None else "--"
+            self._header_mode.set_text(mode_text)
+        else:
+            self._header_batt.set_text(self._t("battery_unknown"))
+            self._header_mode.set_text("--")
+        dpi = self._header_dpi
+        self._header_dpi_label.set_text(
+            self._t("header_dpi").format(x=dpi) if dpi is not None else "--"
+        )
+        rate = self._header_rate
+        self._header_rate_label.set_text(
+            self._t("header_rate").format(rate=rate)
+            if rate is not None
+            else "--"
+        )
 
     # --- DPI section ---
 
@@ -1789,6 +1925,19 @@ class BatteryWindow:
             self._lang = code
             self._win.set_title(self._t("window_title"))
             self._lang_label.set_text(self._t("language_label"))
+            # Header theme selector re-translates with the language; guarded
+            # so headless __new__-based tests that build a partial window are
+            # unaffected.
+            theme_label = getattr(self, "_theme_label", None)
+            theme_combo = getattr(self, "_theme_combo", None)
+            if theme_label is not None and theme_combo is not None:
+                theme_label.set_text(self._t("theme_label"))
+                theme_combo.set_tooltip_text(self._t("theme_tooltip"))
+                active = theme_combo.get_active_id()
+                theme_combo.remove_all()
+                for code in theme_mod.VALID_THEMES:
+                    theme_combo.append(code, self._theme_name(code))
+                theme_combo.set_active_id(active)
             self._tab_battery.set_text(self._t("tab_battery"))
             self._tab_dpi.set_text(self._t("tab_dpi"))
             self._tab_perf.set_text(self._t("tab_perf"))
@@ -1916,3 +2065,4 @@ class BatteryWindow:
             % GLib.markup_escape_text(status)
         )
         self._detail_label.set_text(detail)
+        self._render_header()

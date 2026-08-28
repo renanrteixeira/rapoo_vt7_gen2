@@ -4,11 +4,11 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Notify", "0.7")
-from gi.repository import GLib, Gio, Gtk, Notify
+from gi.repository import GLib, Gio, Gtk, Gdk, Notify
 
 from .battery import BatteryMonitor
-from .config import load_language, save_language
-from . import buttons, dpi, parameters, performance as perf, system
+from .config import load_language, save_language, load_theme, save_theme
+from . import buttons, dpi, parameters, performance as perf, system, theme
 from .gui import BatteryWindow
 from .i18n import LANGS
 from .icons import DEFAULT_ICON_DIR, render_all
@@ -91,10 +91,15 @@ class RapooApp(Gtk.Application):
         Notify.init("rapoo-vt7-battery")
         icon_dir = render_all(ICON_DIR)
         lang = load_language()
+        style_theme = load_theme()
 
         def on_lang_change(code):
             self._tray.set_language(code)
             save_language(code)
+
+        def on_theme_change(code):
+            save_theme(code)
+            self._retheme(code)
 
         self._tray = Tray(
             icon_dir,
@@ -107,6 +112,8 @@ class RapooApp(Gtk.Application):
         self._window = BatteryWindow(
             lang=lang,
             on_lang_change=on_lang_change,
+            theme=style_theme,
+            on_theme_change=on_theme_change,
             application=self,
             on_switch_gear=self._on_switch_gear,
             on_add_gear=self._on_add_gear,
@@ -125,6 +132,12 @@ class RapooApp(Gtk.Application):
             on_start_pairing=self._on_start_pairing,
             on_cancel_pairing=self._on_cancel_pairing,
         )
+        self._provider = theme.new_provider(style_theme)
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(),
+            self._provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
 
         self._monitor = BatteryMonitor(
             on_update=self._on_update,
@@ -132,6 +145,66 @@ class RapooApp(Gtk.Application):
             on_report=self._on_report,
         )
         self._monitor.start()
+
+    def _retheme(self, code):
+        """GTK thread. Rebuilds the CSS provider for `code` and re-applies the
+        root theme class so cards/header/tabs re-render instantly. The prior
+        provider is removed first so many theme switches don't accumulate
+        providers on the application priority."""
+        screen = Gdk.Screen.get_default()
+        if self._provider is not None:
+            Gtk.StyleContext.remove_provider_for_screen(screen, self._provider)
+        self._provider = theme.new_provider(code)
+        Gtk.StyleContext.add_provider_for_screen(
+            screen,
+            self._provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+        theme.apply_theme(self._window._win, code)
+
+    def _refresh_header(self):
+        """GTK thread. Feeds the current DPI value + polling rate into the
+        window header and the tray DPI row (both from report 7 / monitor).
+        Cosmetic: never raises — partial/__new__-based test app stubs and
+        devices in an unknown state simply leave the header as "--"."""
+        try:
+            rate = self._window_rate_hz()
+            dpi = self._window_dpi_x()
+            update = getattr(self._window, "update_header", None)
+            if update is not None:
+                update(dpi=dpi, rate=rate)
+            set_dpi = getattr(self._tray, "set_dpi", None)
+            if set_dpi is not None:
+                set_dpi(dpi, rate)
+        except Exception:
+            return
+
+    def _window_dpi_x(self):
+        """Current DPI value (X of the active gear), or None."""
+        get_info = getattr(self._window, "get_dpi_info", None)
+        if get_info is None:
+            return None
+        try:
+            info = get_info()
+            if info is None or not isinstance(info.get("gear"), int):
+                return None
+            return info["x"][info["gear"]]
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    def _window_rate_hz(self):
+        """Active polling rate index -> Hz, or None.
+
+        Returns None (header shows "--") until the monitor has actually
+        reported a rate (`_rpt_usb`), so the header never fabricates a default
+        1000 Hz before the device reports.
+        """
+        if getattr(self._monitor, "_rpt_usb", None) is None:
+            return None
+        slot = self._current_perf_slot()
+        if isinstance(slot, int) and 0 <= slot < len(perf.RATE_HZ):
+            return perf.RATE_HZ[slot]
+        return None
 
     # --- monitor callbacks (battery thread -> idle_add on GTK) ---
 
@@ -165,6 +238,7 @@ class RapooApp(Gtk.Application):
     def _apply_update(self, percent, charging, mode):
         self._tray.update(percent, charging=charging, mode=mode)
         self._window.update(percent, charging=charging, mode=mode)
+        GLib.idle_add(self._refresh_header)
         if not self._dpi_loaded:
             self._dpi_loaded = True
             self._refresh_dpi()
@@ -374,6 +448,7 @@ class RapooApp(Gtk.Application):
             "dialog-information",
         ).show()
         self._refresh_perf(slot=result["slot"])
+        self._refresh_header()
 
     def _rf_changed(self, state, field):
         """Runs on the GTK thread after an RF write; refreshes the perf/RF tab."""
@@ -817,6 +892,7 @@ class RapooApp(Gtk.Application):
                 % (info["gear"], info["enable"], info["x"])
             )
             GLib.idle_add(self._window.update_dpi, info)
+            GLib.idle_add(self._refresh_header)
 
         def err(exc):
             self._dpi_reading = False

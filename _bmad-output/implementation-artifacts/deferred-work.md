@@ -148,3 +148,21 @@ modify existing entries; only append.
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-4-guided-receiver-pairing.md`
   summary: No rollback of the receiver's RF address after a failed/cancelled pairing session — `write_rf` (0xA1) changes the receiver's wireless address and a failed run can leave the previously-paired mouse orphaned with no in-app recovery.
   evidence: `pairing_session.py` sends the random `write_rf` frame and never restores a prior address; no read-RF command is mapped in the protocol (the A Hub also never restores it) and the confirmation dialog warns the user; needs a reverse-mapped read-RF command + per-session RF preservation to fix.
+
+## Deferred from: code review of spec-ui-redesign (08-27-2026)
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-ui-redesign.md`
+  summary: `assets/rapoo-vt7.css` ships several styling rules whose classes are never applied to widgets — `.card-title`, `.card-title.accent`, `.card-hint`, `.status-label`, `.theme-tab`, `.device-header .header-label`, `button.ghost`, `button.primary`, `button.danger-btn`, `.card.danger`. The core `.card`/`.device-header`/`.header-chip`/`.tray-muted`/`.muted` classes render; the rest is inert.
+  evidence: only `window-root`/`card`/`device-header`/`header-chip`/`batt`/`muted`/`tray-muted` are ever `add_class`-ed in `src/`; wiring the remaining classes to their widgets is a visual-polish pass across all six tabs that cannot be verified without a display, so it is not required by the spec ACs and was left for a focused UI pass.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-ui-redesign.md`
+  summary: The persistent header battery chip (`.header-chip.batt`) is hard-pinned to the green `@theme_accent`, so a low battery (5–19%) still renders a green chip instead of yellow/red — the level color-coding that the tray icon and status label provide is not carried into the header chip.
+  evidence: `assets/rapoo-vt7.css` `.device-header .header-chip.batt { color: @theme_accent; }` plus `_render_header` in `gui.py` always renders the chip text without a level class; needs threshold logic in the header, out of scope of the theme/AC work.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-ui-redesign.md`
+  summary: Dialogs and secondary windows (per-button picker dialog, pairing dialogs) are never given a `theme-*`/`window-root` class, so in a dark/system session they render with the default light theme — a theme-coherence gap the persistent header advertises.
+  evidence: `theme.apply_theme` is only applied to `self._win` plus synthetic `__new__` stubs; `Gtk.Dialog`/pairing dialogs are constructed without the theme classes and are not reachable from a single theme entry point.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-ui-redesign.md`
+  summary: The bundled stylesheet path resolves relative to the source tree (`ASSETS_DIR` from `theme.py`'s location) and `base_css()` permanently caches `""` on the first read failure, and `new_provider` swallows all failures to an empty provider — a missing/malformed `assets/rapoo-vt7.css` silently produces an unthemed app with no warning and no retry.
+  evidence: `theme.py` `ASSETS_DIR`/`BASE_CSS_PATH` and `base_css` `_base_css_cache = ""` (never retried); `new_provider` `except Exception: load_from_data(b"")`. The app's deployment model is run-from-repo (`run.sh`), so the repo-relative path works in practice; live OS-scheme tracking for "system" is a separate enhancement also deferred here.
