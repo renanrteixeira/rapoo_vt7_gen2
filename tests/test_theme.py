@@ -323,5 +323,43 @@ class ThemeChangedHandlerTest(unittest.TestCase):
         self.assertEqual(w.calls, [])
 
 
+class CardWrapLayoutTest(unittest.TestCase):
+    """Structural regression for the card wrapper rebinding bug.
+
+    `_card_wrap` returns a ``Gtk.Frame`` (which has no ``pack_start``). If a
+    page vbox is rebound to the frame BEFORE the section builder keeps packing
+    into it, ``BatteryWindow.__init__`` crashes with ``AttributeError:
+    'Frame' object has no attribute 'pack_start'`` — the window never opens,
+    and ``do_startup`` leaves ``_window``/``_monitor`` unset, so "Sair" also
+    fails. This reads the source to pin the fix: cards are applied inline in
+    ``append_page``/scroll-add, never by rebinding the ``pageN`` vbox.
+    """
+
+    def _init_src(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "src",
+                            "rapoo_vt7", "gui.py")
+        with open(path) as fh:
+            return fh.read()
+
+    def test_pages_not_rebound_to_card(self):
+        src = self._init_src()
+        for var in ("page1", "page2", "page3", "page4", "page5", "page6"):
+            self.assertNotIn(
+                f"{var} = self._card_wrap({var})", src,
+                f"{var} must stay the inner vbox; wrap inline instead",
+            )
+
+    def test_cards_applied_inline_when_attached(self):
+        src = self._init_src()
+        # The fix wraps inline at attach time for the direct pages (notebook)
+        # and the scrollable pages (scroll.add).
+        self.assertIn("append_page(self._card_wrap(page1)", src)
+        self.assertIn("append_page(self._card_wrap(page2)", src)
+        self.assertIn("add(self._card_wrap(page3))", src)
+        self.assertIn("add(self._card_wrap(page4))", src)
+        self.assertIn("add(self._card_wrap(page5))", src)
+        self.assertIn("add(self._card_wrap(page6))", src)
+
+
 if __name__ == "__main__":
     unittest.main()

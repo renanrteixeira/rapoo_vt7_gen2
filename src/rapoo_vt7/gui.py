@@ -517,16 +517,14 @@ class BatteryWindow:
         page1.set_margin_bottom(16)
         page1.set_margin_start(16)
         page1.set_margin_end(16)
-        page1 = self._card_wrap(page1)
-        self._notebook.append_page(page1, self._tab_battery)
+        self._notebook.append_page(self._card_wrap(page1), self._tab_battery)
 
         page2 = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         page2.set_margin_top(16)
         page2.set_margin_bottom(16)
         page2.set_margin_start(16)
         page2.set_margin_end(16)
-        page2 = self._card_wrap(page2)
-        self._notebook.append_page(page2, self._tab_dpi)
+        self._notebook.append_page(self._card_wrap(page2), self._tab_dpi)
 
         self._area = Gtk.DrawingArea()
         self._area.set_size_request(300, 180)
