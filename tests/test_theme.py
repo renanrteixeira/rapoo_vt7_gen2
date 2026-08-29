@@ -63,13 +63,78 @@ class ThemeResolutionTest(unittest.TestCase):
         for code in ("light", "dark", "system"):
             self.assertEqual(theme.sanitize_theme(code), code)
 
-    def test_system_resolves_via_gtk_preference(self):
+    def _gio(self, scheme=None, gtk_theme=None):
+        """A fake Gio.Settings with a fixed color-scheme + gtk-theme."""
+        return NS(
+            get_string=lambda name: {
+                "color-scheme": scheme if scheme is not None else "",
+                "gtk-theme": gtk_theme or "",
+            }[name]
+        )
+
+    def test_system_resolves_dark_via_color_scheme(self):
         from src.rapoo_vt7 import theme
 
-        # No GTK settings object (headless): falls back to "light".
-        with mock.patch.object(theme, "Gtk") as gtk:
-            gtk.Settings.get_default.return_value = None
+        gio = self._gio(scheme="prefer-dark")
+        with (
+            mock.patch.object(theme, "Gio"),
+            mock.patch.object(theme, "Gtk"),
+        ):
+            theme.Gio.Settings.new.return_value = gio
+            self.assertEqual(theme.effective_theme("system"), "dark")
+
+    def test_system_resolves_light_via_color_scheme(self):
+        from src.rapoo_vt7 import theme
+
+        gio = self._gio(scheme="prefer-light")
+        with (
+            mock.patch.object(theme, "Gio"),
+            mock.patch.object(theme, "Gtk"),
+        ):
+            theme.Gio.Settings.new.return_value = gio
             self.assertEqual(theme.effective_theme("system"), "light")
+
+    def test_system_resolves_dark_via_theme_name_fallback(self):
+        """Ubuntu builds without a color-scheme key still ship a `-dark`
+        theme (e.g. Yaru-red-dark); color-scheme empty -> theme-name wins."""
+        from src.rapoo_vt7 import theme
+
+        gio = self._gio(scheme="", gtk_theme="Yaru-red-dark")
+        with mock.patch.object(theme, "Gio") as gio_mock:
+            gio_mock.Settings.new.return_value = gio
+            self.assertEqual(theme.effective_theme("system"), "dark")
+
+    def test_system_resolves_light_when_default_theme(self):
+        from src.rapoo_vt7 import theme
+
+        gio = self._gio(scheme="", gtk_theme="Yaru")
+        with mock.patch.object(theme, "Gio") as gio_mock:
+            gio_mock.Settings.new.return_value = gio
+            gio_mock.Settings.new.side_effect = None
+            self.assertEqual(theme.effective_theme("system"), "light")
+
+    def test_system_gtk_fallback_when_no_gio(self):
+        """Gio unavailable/raising: falls back to the GTK dark property."""
+        from src.rapoo_vt7 import theme
+
+        with mock.patch.object(theme, "Gio") as gio:
+            gio.Settings.new.side_effect = Exception("no gio")
+            with mock.patch.object(theme, "Gtk") as gtk:
+                gtk.Settings.get_default.return_value = NS(
+                    get_property=lambda name: True
+                )
+                self.assertEqual(theme.effective_theme("system"), "dark")
+
+    def test_system_resolves_light_when_no_gtk(self):
+        from src.rapoo_vt7 import theme
+
+        # Gio empty + no GTK settings object (headless): falls back to "light".
+        gio = self._gio(scheme="", gtk_theme="")
+        with mock.patch.object(theme, "Gio") as gio_mock:
+            gio_mock.Settings.new.return_value = gio
+            with mock.patch.object(theme, "Gtk") as gtk:
+                gtk.Settings.get_default.return_value = None
+                self.assertEqual(theme.effective_theme("system"), "light")
 
     def test_explicit_overrides_system(self):
         from src.rapoo_vt7 import theme
@@ -321,6 +386,100 @@ class ThemeChangedHandlerTest(unittest.TestCase):
         self.assertFalse(self.ctx.has_class("theme-dark"))
         self.assertFalse(self.ctx.has_class("theme-light"))
         self.assertEqual(w.calls, [])
+
+
+class SystemThemeWatchTest(unittest.TestCase):
+    """Live OS light/dark tracking for the "system" theme (I/O THEME_SET).
+
+    `RapooApp._start_system_theme_watch` sets up a Gio.Settings watch and
+    `_on_system_scheme_change` re-renders only when the user theme is "system".
+    Because the methods may be exercised on `__new__`-based app stubs, every
+    attribute access is guarded — the tests pin that the guard never raises.
+    """
+
+    def _app(self, theme_code="system"):
+        from src.rapoo_vt7 import main as main_mod
+
+        app = main_mod.RapooApp.__new__(main_mod.RapooApp)
+        app._scheme_settings = None
+        app._window = NS(_theme=theme_code)
+        app._retheme_calls = []
+        app._retheme = lambda code: app._retheme_calls.append(code)
+        return app
+
+    def test_start_watch_connects_color_scheme(self):
+        from src.rapoo_vt7 import main as main_mod
+
+        app = self._app()
+        settings = NS(connect=lambda *a: None, list_keys=lambda: ["color-scheme"])
+        with mock.patch.object(main_mod.Gio, "Settings") as gs:
+            gs.new.return_value = settings
+            main_mod.RapooApp._start_system_theme_watch(app)
+        self.assertIs(app._scheme_settings, settings)
+
+    def test_start_watch_no_schema_is_noop(self):
+        from src.rapoo_vt7 import main as main_mod
+
+        app = self._app()
+        with mock.patch.object(main_mod.Gio, "Settings") as gs:
+            gs.new.side_effect = Exception("no schema")
+            main_mod.RapooApp._start_system_theme_watch(app)
+        self.assertIsNone(app._scheme_settings)
+
+    def test_scheme_change_rethemes_when_system(self):
+        from src.rapoo_vt7 import main as main_mod
+
+        app = self._app("system")
+        main_mod.RapooApp._on_system_scheme_change(app)
+        self.assertEqual(app._retheme_calls, ["system"])
+
+    def test_scheme_change_noop_when_not_system(self):
+        from src.rapoo_vt7 import main as main_mod
+
+        for code in ("light", "dark"):
+            app = self._app(code)
+            main_mod.RapooApp._on_system_scheme_change(app)
+            self.assertEqual(app._retheme_calls, [])
+
+    def test_scheme_change_noop_when_no_window(self):
+        from src.rapoo_vt7 import main as main_mod
+
+        app = self._app()
+        app._window = None
+        main_mod.RapooApp._on_system_scheme_change(app)  # must not raise
+        self.assertEqual(app._retheme_calls, [])
+
+
+class StyleWindowTest(unittest.TestCase):
+    """theme.style_window: adds window-root + the theme branch (I/O THEME_SET).
+
+    `style_window` is the single entry point used by both the main window and
+    secondary dialogs, so they all render from the same token sheet.
+    """
+
+    def _root(self):
+        self.ctx = _StyleCtx()
+        return NS(get_style_context=lambda: self.ctx)
+
+    def test_style_window_adds_window_root_and_theme_class(self):
+        root = self._root()
+        theme.style_window(root, "dark")
+        self.assertIn("window-root", self.ctx.classes)
+        self.assertIn("theme-dark", self.ctx.classes)
+
+    def test_style_window_light_switches(self):
+        root = self._root()
+        self.ctx.add_class("theme-dark")
+        theme.style_window(root, "light")
+        self.assertIn("window-root", self.ctx.classes)
+        self.assertIn("theme-light", self.ctx.classes)
+        self.assertNotIn("theme-dark", self.ctx.classes)
+
+    def test_style_window_is_idempotent(self):
+        root = self._root()
+        theme.style_window(root, "dark")
+        theme.style_window(root, "dark")
+        self.assertEqual(self.ctx.classes, {"window-root", "theme-dark"})
 
 
 class CardWrapLayoutTest(unittest.TestCase):

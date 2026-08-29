@@ -27,7 +27,14 @@ last read time and "asleep" state. Supports both connections (2.4G + USB cable).
 Autostart (A7) and uninstall (A8) implemented and tested. **UI redesign DONE
 (2026-08-27, `feat/ui-redesign`, spec `_bmad-output/.../spec-ui-redesign.md`)**:
 a token-based **CSS theme** (`theme.py` + `assets/rapoo-vt7.css`) with
-light/dark/**system** resolution (`system` follows the GTK dark preference),
+light/dark/**system** resolution (2026-08-28 `system` resolves via
+`Gio.Settings` `color-scheme` → `gtk-theme-name` `-dark` → GTK `prefer-dark`;
+**live re-render** when the OS switches light↔dark — `RapooApp`
+`_start_system_theme_watch`/`_on_system_scheme_change`; **widget fg forced to
+the token** (`.window-root * { color: @theme_fg }`) so labels/combos/spins stay
+readable in light; **secondary dialogs themed too** via `theme.style_window`
+(pairing OK / factory-reset confirm / button picker — `window-root` +
+`theme-light`/`theme-dark`, same as the main window)),
 persisted in `config.py` alongside `language`; the window has a persistent
 **device header** (battery/mode/DPI/rate chips + theme combo) and card-wrapped
 sections (`_card_wrap`); the tray adds a **muted DPI/rate** info row. Theme/DPi

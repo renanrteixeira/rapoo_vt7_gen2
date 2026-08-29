@@ -12,6 +12,18 @@
     color: @theme_fg;
 }
 
+/* GTK widgets carry their own theme fg (e.g. Adwaita sets `label { color:
+   @theme_fg_color }`), which overrides inherited `color` — so plain labels,
+   combos, spins, etc. would ignore the token and stay unreadable in light
+   mode. Force EVERY widget under the themed window to follow the token fg
+   (dark text in light, light text in dark). The specific rules below
+   (chips, muted, accents, primary buttons) re-assert their colors at equal
+   or higher specificity, so they still win. */
+.window-root,
+.window-root * {
+    color: @theme_fg;
+}
+
 /* ---- persistent device header ---- */
 .device-header {
     background-color: @theme_card_bg;

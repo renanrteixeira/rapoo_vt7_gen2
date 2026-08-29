@@ -495,9 +495,7 @@ class BatteryWindow:
         self._win.connect("delete-event", self._on_close)
         # Root style classes: `window-root` for the base palette + `theme-*`
         # so the single stylesheet branches on the effective theme.
-        wr = self._win.get_style_context()
-        wr.add_class("window-root")
-        theme_mod.apply_theme(self._win, self._theme)
+        theme_mod.style_window(self._win, self._theme)
 
         # Root box: persistent device header on top + the tabbed notebook.
         self._root_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1099,6 +1097,7 @@ class BatteryWindow:
             buttons=Gtk.ButtonsType.NONE,
             text=self._t("pairing_dialog_title"),
         )
+        theme_mod.style_window(dialog, self._theme)
         dialog.format_secondary_text(self._t("pairing_dialog_message"))
         dialog.add_button(self._t("pairing_cancel"), Gtk.ResponseType.CANCEL)
         dialog.add_button(self._t("pairing_ok"), Gtk.ResponseType.OK)
@@ -1251,6 +1250,7 @@ class BatteryWindow:
             buttons=Gtk.ButtonsType.NONE,
             text=self._t("factory_reset_dialog_title"),
         )
+        theme_mod.style_window(dialog, self._theme)
         dialog.format_secondary_text(self._t("factory_reset_dialog_message"))
         dialog.add_button(self._t("factory_reset_cancel"), Gtk.ResponseType.CANCEL)
         dialog.add_button(self._t("factory_reset_ok"), Gtk.ResponseType.OK)
@@ -1363,6 +1363,7 @@ class BatteryWindow:
             transient_for=self._win,
             modal=True,
         )
+        theme_mod.style_window(dialog, self._theme)
         notebook = Gtk.Notebook()
         functions = self._picker_list_page(
             [(fid, self._t("fn_" + fid)) for fid in buttons.METHODS],
