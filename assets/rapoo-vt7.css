@@ -121,3 +121,25 @@ button.danger-btn {
 .tray-muted {
     color: @theme_muted;
 }
+
+/* ---- native controls (combos, entries, spins) ----
+   The GTK system theme may be dark (e.g. Yaru-red-dark) while our theme is
+   light; these controls then paint a dark background. Force their background
+   and foreground from the tokens so combos/spins/entries are always readable.
+   The dropdown/popup of a combo is a separate toplevel (not under
+   .window-root), so it follows the OS theme on its own. */
+.window-root combobox,
+.window-root combobox > box,
+.window-root combobox button,
+.window-root entry,
+.window-root spinbutton,
+.window-root spinbutton button,
+.window-root spinbutton entry {
+    background-color: @theme_card_bg;
+    color: @theme_fg;
+    border: 1px solid @theme_card_border;
+    border-radius: 6px;
+}
+.window-root combobox arrow {
+    color: @theme_fg;
+}
