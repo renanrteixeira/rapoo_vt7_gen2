@@ -139,6 +139,7 @@ class RapooApp(Gtk.Application):
             self._provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
+        theme.sync_gtk_dark(style_theme)
         self._start_system_theme_watch()
 
         self._monitor = BatteryMonitor(
@@ -162,6 +163,7 @@ class RapooApp(Gtk.Application):
             self._provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
+        theme.sync_gtk_dark(code)
         theme.apply_theme(self._window._win, code)
 
     def _start_system_theme_watch(self):

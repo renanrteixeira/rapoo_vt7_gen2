@@ -482,6 +482,74 @@ class StyleWindowTest(unittest.TestCase):
         self.assertEqual(self.ctx.classes, {"window-root", "theme-dark"})
 
 
+class _FakeSettings:
+    """Gtk.Settings stub recording properties and returning a fixed
+    gtk-theme-name, so sync_gtk_dark's prefer-dark + theme-name swap is
+    testable headlessly."""
+
+    def __init__(self, theme_name):
+        self.props = {}
+        self.theme_name = theme_name
+
+    def set_property(self, name, value):
+        self.props[name] = value
+        if name == "gtk-theme-name":
+            self.theme_name = value
+
+    def get_property(self, name):
+        return self.props.get(name) if name != "gtk-theme-name" else self.theme_name
+
+
+class SyncGtkDarkTest(unittest.TestCase):
+    """theme.sync_gtk_dark: mirrors the effective theme onto GTK's native
+    widget scheme so ALL controls (combos/spins/entries/tabs/radios/listboxes)
+    paint the same light/dark as our tokens (I/O THEME_SET)."""
+
+    def test_sync_dark_sets_prefer_dark_true(self):
+        from src.rapoo_vt7 import theme
+
+        settings = _FakeSettings("Yaru-red")
+        with mock.patch.object(theme, "Gtk") as gtk:
+            gtk.Settings.get_default.return_value = settings
+            theme.sync_gtk_dark("dark")
+        self.assertTrue(settings.props.get("gtk-application-prefer-dark-theme"))
+        self.assertEqual(settings.theme_name, "Yaru-red-dark")
+
+    def test_sync_light_sets_prefer_dark_false_and_swaps_theme(self):
+        from src.rapoo_vt7 import theme
+
+        settings = _FakeSettings("Yaru-red-dark")
+        with mock.patch.object(theme, "Gtk") as gtk:
+            gtk.Settings.get_default.return_value = settings
+            theme.sync_gtk_dark("light")
+        self.assertFalse(settings.props.get("gtk-application-prefer-dark-theme"))
+        # dark OS theme swapped to its light variant for the light app theme.
+        self.assertEqual(settings.theme_name, "Yaru-red")
+
+    def test_sync_roundtrip_light_dark_light(self):
+        # Operating on the CURRENT theme (idempotent) must round-trip
+        # light->dark->light correctly, never getting stuck in one variant.
+        from src.rapoo_vt7 import theme
+
+        settings = _FakeSettings("Yaru-red-dark")
+        with mock.patch.object(theme, "Gtk") as gtk:
+            gtk.Settings.get_default.return_value = settings
+            theme.sync_gtk_dark("light")
+            self.assertEqual(settings.theme_name, "Yaru-red")
+            theme.sync_gtk_dark("dark")
+            self.assertEqual(settings.theme_name, "Yaru-red-dark")
+            theme.sync_gtk_dark("light")
+            self.assertEqual(settings.theme_name, "Yaru-red")
+
+    def test_sync_noop_when_no_gtk_settings(self):
+        from src.rapoo_vt7 import theme
+
+        with mock.patch.object(theme, "Gtk") as gtk:
+            gtk.Settings.get_default.return_value = None
+            result = theme.sync_gtk_dark("dark")  # must not raise
+        self.assertEqual(result, "dark")
+
+
 class CardWrapLayoutTest(unittest.TestCase):
     """Structural regression for the card wrapper rebinding bug.
 

@@ -192,3 +192,46 @@ def new_provider(theme):
         # fall back to an empty provider (default GTK look remains).
         provider.load_from_data(b"")
     return provider
+
+
+def sync_gtk_dark(theme):
+    """Force GTK's native-widget rendering to match the effective theme.
+
+    The window bg/cards are drawn from our tokens, but combos, spins, entries,
+    notebook tabs, radios, listboxes, scales and dialogs still paint with the
+    GTK theme's own light/dark built from ``gtk-theme-name``. If the desktop
+    theme is dark (e.g. ``Yaru-red-dark``) while we render a light theme, the
+    forced ``color: @theme_fg`` would put dark text on those dark controls.
+
+    This syncs the GTK theme to the effective scheme:
+    - sets ``gtk-application-prefer-dark-theme`` to match the effective theme,
+    - and toggles the ``-dark`` suffix of ``gtk-theme-name`` so every native
+      control re-renders in the right scheme instead of being patched one
+      widget at a time. Idempotent: operates on the theme currently set (so
+      light->dark->light round-trips correctly). Pure: never raises (headless
+      -> no-op).
+    """
+    effective = effective_theme(theme)
+    settings = Gtk.Settings.get_default()
+    if settings is None:
+        return effective
+    try:
+        settings.set_property(
+            "gtk-application-prefer-dark-theme", effective == "dark"
+        )
+    except Exception:
+        pass
+
+    try:
+        current = settings.get_property("gtk-theme-name") or ""
+        if not current:
+            return effective
+        want_dark = effective == "dark"
+        is_dark = current.lower().endswith("-dark")
+        if want_dark and not is_dark:
+            settings.set_property("gtk-theme-name", current + "-dark")
+        elif not want_dark and is_dark:
+            settings.set_property("gtk-theme-name", current[: -len("-dark")])
+    except Exception:
+        pass
+    return effective
