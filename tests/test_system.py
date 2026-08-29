@@ -728,7 +728,20 @@ class _FakeDialog:
         self.buttons = []
         self.default = None
         self.destroyed = False
+        self._classes = set()
         self.__class__.created.append(self)
+
+    def get_style_context(self):
+        return self
+
+    def add_class(self, cls):
+        self._classes.add(cls)
+
+    def remove_class(self, cls):
+        self._classes.discard(cls)
+
+    def has_class(self, cls):
+        return cls in self._classes
 
     def format_secondary_text(self, text):
         self.secondary = text
@@ -757,6 +770,7 @@ class FactoryResetDialogTest(unittest.TestCase):
         calls = []
         window = gui.BatteryWindow.__new__(gui.BatteryWindow)
         window._lang = "en"
+        window._theme = "light"
         window._win = object()
         window._system_button = _StubButton()
         window._on_factory_reset = lambda: calls.append("reset")
@@ -786,6 +800,17 @@ class FactoryResetDialogTest(unittest.TestCase):
         )
         self.assertEqual(dialog.default, gui.Gtk.ResponseType.CANCEL)
         self.assertTrue(dialog.destroyed)
+
+    def test_dialog_is_themed(self):
+        # The confirmation dialog must carry the same palette classes as the
+        # main window (window-root + theme branch) so it is readable in dark.
+        from src.rapoo_vt7 import gui
+
+        window, _calls = self._window_and_dialog(gui.Gtk.ResponseType.CANCEL)
+        window._on_factory_reset_clicked(None)
+        dialog = _FakeDialog.created[0]
+        self.assertIn("window-root", dialog._classes)
+        self.assertIn("theme-light", dialog._classes)
 
     def test_cancel_closes_without_sending_reset(self):
         from src.rapoo_vt7 import gui
@@ -1520,6 +1545,7 @@ class PairingDialogTest(unittest.TestCase):
         calls = []
         window = gui.BatteryWindow.__new__(gui.BatteryWindow)
         window._lang = "en"
+        window._theme = "light"
         window._win = object()
         window._pair_busy = False
         window._pair_last_status = None

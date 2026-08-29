@@ -73,6 +73,7 @@ class RapooApp(Gtk.Application):
         self._pair_session = None
         self._pair_step = 0
         self._quitting = False
+        self._scheme_settings = None  # Gio.Settings watch for OS light/dark
         self._app_report = None  # last (gear, x) written by the app — report
         # echo of an app write is not re-notified
         # --hidden starts only in the systray (used by autostart). The short
@@ -138,6 +139,7 @@ class RapooApp(Gtk.Application):
             self._provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
+        self._start_system_theme_watch()
 
         self._monitor = BatteryMonitor(
             on_update=self._on_update,
@@ -161,6 +163,45 @@ class RapooApp(Gtk.Application):
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
         theme.apply_theme(self._window._win, code)
+
+    def _start_system_theme_watch(self):
+        """Watch the OS light/dark source of truth so the "system" theme
+        re-renders live when the user switches Aparência in GNOME.
+
+        GTK thread. Guards every access: a missing schema, a missing
+        ``color-scheme`` key or any binding problem leaves ``system`` resolved
+        only at startup (existing behaviour) instead of crashing the app.
+        """
+        if self._scheme_settings is not None:
+            return
+        try:
+            settings = Gio.Settings.new("org.gnome.desktop.interface")
+        except Exception:
+            return
+        self._scheme_settings = settings
+        try:
+            settings.connect("changed::color-scheme", self._on_system_scheme_change)
+        except Exception:
+            pass
+        try:
+            if not settings.list_keys():
+                # Schema has no color-scheme key (e.g. older Ubuntu): watch the
+                # theme name instead, since dark mode there is a `-dark` theme.
+                settings.connect("changed::gtk-theme", self._on_system_scheme_change)
+        except Exception:
+            pass
+
+    def _on_system_scheme_change(self, *_args):
+        """GTK thread. Only re-renders when the user theme is "system"."""
+        if not hasattr(self, "_window") or self._window is None:
+            return
+        current = getattr(self._window, "_theme", None)
+        if current != "system":
+            return
+        try:
+            self._retheme("system")
+        except Exception:
+            pass
 
     def _refresh_header(self):
         """GTK thread. Feeds the current DPI value + polling rate into the
@@ -934,6 +975,8 @@ class RapooApp(Gtk.Application):
             self._pair_session.cancel()
         self._monitor.set_quiet(False)
         self._monitor.stop()
+        if getattr(self, "_scheme_settings", None) is not None:
+            self._scheme_settings = None
         Notify.uninit()
         self.quit()
 

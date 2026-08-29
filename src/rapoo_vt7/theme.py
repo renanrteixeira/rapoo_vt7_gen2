@@ -12,13 +12,14 @@ import os
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+from gi.repository import Gtk, Gio
 
 DEFAULT_THEME = "system"
 VALID_THEMES = ("light", "dark", "system")
 
 # Raíz classes applied to the window root. A single stylesheet branches on
 # these so both themes share one source of styling rules.
+CLASS_ROOT = "window-root"
 CLASS_DARK = "theme-dark"
 CLASS_LIGHT = "theme-light"
 
@@ -86,16 +87,44 @@ def sanitize_theme(theme):
 
 
 def effective_theme(theme):
-    """Resolve "system" into "light"/"dark" using the GTK dark preference.
+    """Resolve "system" into "light"/"dark" from the OS/GNOME preference.
 
-    Only reads the GTK settings; never mutates anything (pure). Falls back to
-    "light" when no GTK settings object is available (headless).
+    Checks, in order:
+    1. the GSettings key ``org.gnome.desktop.interface color-scheme``
+       (``prefer-dark`` -> dark, ``prefer-light`` -> light) — the modern GNOME
+       source of truth behind "Aparência";
+    2. the GTK ``gtk-theme-name`` ending in ``-dark``/``Dark`` (covers Ubuntu
+       builds whose schema lacks the ``color-scheme`` key but still ships a
+       ``-dark`` theme, e.g. ``Yaru-red-dark``);
+    3. the GTK ``gtk-application-prefer-dark-theme`` property, then "light"
+       (headless).
+
+    Never mutates anything (pure) and never raises.
     """
     theme = sanitize_theme(theme)
     if theme != "system":
         return theme
-    settings = Gtk.Settings.get_default()
     try:
+        gs = Gio.Settings.new("org.gnome.desktop.interface")
+        try:
+            scheme = gs.get_string("color-scheme")
+        except Exception:
+            scheme = ""
+        if scheme == "prefer-dark":
+            return "dark"
+        if scheme == "prefer-light":
+            return "light"
+        # "default"/unset -> consult the theme-name / GTK dark preference.
+        try:
+            gtk_theme = gs.get_string("gtk-theme")
+        except Exception:
+            gtk_theme = ""
+        if gtk_theme and gtk_theme.lower().endswith("-dark"):
+            return "dark"
+    except Exception:
+        pass
+    try:
+        settings = Gtk.Settings.get_default()
         if settings is not None and settings.get_property(
             "gtk-application-prefer-dark-theme"
         ):
@@ -120,6 +149,18 @@ def apply_theme(window_root, theme):
             ctx.remove_class(cls)
     ctx.add_class(CLASS_DARK if effective == "dark" else CLASS_LIGHT)
     return effective
+
+
+def style_window(window_root, theme):
+    """Theme a window root: adds ``window-root`` (the base-palette class) plus
+    the effective ``theme-light``/``theme-dark`` branch, so a main window and
+    secondary dialogs all render from the same token sheet. Returns the
+    effective theme.
+
+    Idempotent — safe to call on an already-themed window.
+    """
+    window_root.get_style_context().add_class(CLASS_ROOT)
+    return apply_theme(window_root, theme)
 
 
 def build_css(theme):

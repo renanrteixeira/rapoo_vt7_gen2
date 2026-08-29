@@ -27,11 +27,25 @@ last read time and "asleep" state. Supports both connections (2.4G + USB cable).
 Autostart (A7) and uninstall (A8) implemented and tested. **UI redesign DONE
 (2026-08-27, `feat/ui-redesign`, spec `_bmad-output/.../spec-ui-redesign.md`)**:
 a token-based **CSS theme** (`theme.py` + `assets/rapoo-vt7.css`) with
-light/dark/**system** resolution (`system` follows the GTK dark preference),
+light/dark/**system** resolution (2026-08-28 `system` resolves via
+`Gio.Settings` `color-scheme` → `gtk-theme-name` `-dark` → GTK `prefer-dark`;
+**live re-render** when the OS switches light↔dark — `RapooApp`
+`_start_system_theme_watch`/`_on_system_scheme_change`; **widget fg forced to
+the token** (`.window-root * { color: @theme_fg }`) so labels/combos/spins stay
+readable in light; **secondary dialogs themed too** via `theme.style_window`
+(pairing OK / factory-reset confirm / button picker — `window-root` +
+`theme-light`/`theme-dark`, same as the main window)),
 persisted in `config.py` alongside `language`; the window has a persistent
 **device header** (battery/mode/DPI/rate chips + theme combo) and card-wrapped
 sections (`_card_wrap`); the tray adds a **muted DPI/rate** info row. Theme/DPi
-header state is separate label vs value (crash-regression fixed). Headless
+header state is separate label vs value (crash-regression fixed). **Crash fix
+(2026-08-28, commit d988e22)**: `_card_wrap` returns a `Gtk.Frame` (no
+`pack_start`); rebinding `page1`/`page2` to it crashed
+`BatteryWindow.__init__` (`AttributeError: 'Frame' has no 'pack_start'`) so the
+window never opened and `do_startup` left `_window`/`_monitor` unset — also
+breaking "Sair". Fixed by applying the wrap inline in `append_page` and keeping
+the `pageN` vbox (aligned with the scrollable pages 3–6); structural regression
+tests `CardWrapLayoutTest` pin it. Headless
 tests in `tests/test_theme.py` (14). Review patches P1-P6 applied; deferrals
 D1-D4 in `_bmad-output/implementation-artifacts/deferred-work.md`. **Phase 2 DONE**: the
 window is organized in **tabs** (Bateria | DPI): tab 1 = elegant mouse image +
@@ -523,6 +537,7 @@ python3 tools/probe.py
 | Commands return empty | mouse asleep | move the mouse (see P1) |
 | Icon does not appear | appindicators extension | enable it in Extensions |
 | "busy" when opening hidraw | another process on the interface | close other apps (e.g. A Hub) |
+| `libpthread.so.0: undefined symbol: __libc_pthread_init` | launching from a terminal inside the VS Code snap (injects LOCPATH/GTK_PATH/GSETTINGS_SCHEMA_DIR/XDG_\*/PYTHONSTARTUP into core20) | `run.sh` now unsets those and restores system `XDG_DATA_DIRS` (fix 992a085); run `./run.sh` from any terminal |
 
 ---
 
