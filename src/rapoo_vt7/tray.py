@@ -59,6 +59,13 @@ class Tray:
         self.dpi_item.set_sensitive(False)
         self.dpi_item.get_style_context().add_class("tray-muted")
         self.menu.append(self.dpi_item)
+
+        # Tempo sem recarregar (medido pelo app; texto pronto de `main`).
+        self._usage_text = None
+        self.usage_item = Gtk.MenuItem(label=self._t("usage_none"))
+        self.usage_item.set_sensitive(False)
+        self.usage_item.get_style_context().add_class("tray-muted")
+        self.menu.append(self.usage_item)
         self.menu.append(Gtk.SeparatorMenuItem())
 
         self.item_refresh = Gtk.MenuItem(label=self._t("refresh_now"))
@@ -103,6 +110,7 @@ class Tray:
         self.item_open.set_label(t["open_window"])
         self.item_refresh.set_label(t["refresh_now"])
         self.item_quit.set_label(t["quit"])
+        self.usage_item.set_label(self._usage_text or t["usage_none"])
         if not self._known:
             self.status_item.set_label(t["battery_unknown"])
             self.detail_item.set_label(t["connect_device"])
@@ -139,6 +147,12 @@ class Tray:
         self._dpi = dpi
         self._rate = rate
         self._render_dpi()
+
+    def set_usage(self, text):
+        """Texto do tempo sem recarregar (já localizado por `main`). None/""
+        volta para o rótulo neutro localizado."""
+        self._usage_text = text or None
+        self.usage_item.set_label(self._usage_text or self._t("usage_none"))
 
     def set_unknown(self):
         self._known = False

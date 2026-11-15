@@ -151,6 +151,33 @@ Alt R=0x40, Win R=0x80).
 - **Screen/OLED**: product has no `hasScreen`; interface 2 (hidraw3, 512 B)
   exists in the descriptor but is not used by the VT7.
 
+### G. Tempo sem recarregar — NÃO existe no firmware (contador local) ✅
+Não há campo de tempo/carga no EEPROM nem relógio no mouse: o A Hub expõe só
+`battery` (%) e `status` (0 inválido / 1 descarregando / 2 carregando); o
+"Battery life calculator" da interface web é uma **estimativa teórica por modo
+de performance**, não uma medição. Verificado no bundle (nenhuma chave de
+tempo/ciclo em `MOUSE_*`) e no registro de 34 campos (`settings.FIELDS`).
+
+Implementação (`usage.py` + aba Bateria + tray): a duração é derivada das
+transições observadas **pelo app**:
+- primeira leitura em descarga abre a sessão;
+- `status=2` só encerra a sessão depois de **confirmado** (`CONFIRM_SECONDS`,
+  histerese contra um byte isolado); o fim gravado é a **primeira** leitura de
+  carga;
+- **% nunca abre/encerra sessão**: ao desligar/religar o mouse o medidor
+  recalibra e a leitura pode subir sem recarga — o salto só incrementa o
+  diagnóstico `recalibrations`;
+- estado em `~/.config/rapoo-vt7/usage.json` (gravação atômica): remover o
+  dongle, fechar o app ou reiniciar o PC **não zera**;
+- modo USB (cabo) também conta como carga, mesmo quando o firmware para de
+  reportar `status=2` com a bateria cheia;
+- histórico persistido das últimas 10 sessões (sessões < 1 min ficam de fora
+  da média; a UI mostra a última enquanto carrega e a média no tooltip) +
+  botão **Zerar** para quando a carga aconteceu com o PC desligado.
+
+Limite assumido: só mede com o app rodando; uma carga com o PC desligado
+termina na primeira leitura de "carregando" (fim gravado = essa leitura).
+
 ---
 
 ## 3. Implementation roadmap

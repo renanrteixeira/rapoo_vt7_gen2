@@ -1,4 +1,5 @@
 import sys
+import time
 
 import gi
 
@@ -8,7 +9,16 @@ from gi.repository import GLib, Gio, Gtk, Gdk, Notify
 
 from .battery import BatteryMonitor
 from .config import load_language, save_language, load_theme, save_theme
-from . import buttons, dpi, parameters, performance as perf, system, theme
+from . import (
+    buttons,
+    dpi,
+    parameters,
+    performance as perf,
+    protocol,
+    system,
+    theme,
+    usage,
+)
 from .gui import BatteryWindow
 from .i18n import LANGS
 from .icons import DEFAULT_ICON_DIR, render_all
@@ -93,10 +103,15 @@ class RapooApp(Gtk.Application):
         icon_dir = render_all(ICON_DIR)
         lang = load_language()
         style_theme = load_theme()
+        # Tempo sem recarregar: medido localmente (o firmware não expõe esse
+        # dado). O estado em disco sobrevive a reinícios, remoção do dongle e
+        # ao power-cycle do mouse.
+        self._usage = usage.UsageTracker()
 
         def on_lang_change(code):
             self._tray.set_language(code)
             save_language(code)
+            self._refresh_usage()
 
         def on_theme_change(code):
             save_theme(code)
@@ -132,6 +147,7 @@ class RapooApp(Gtk.Application):
             on_rename=self._on_rename,
             on_start_pairing=self._on_start_pairing,
             on_cancel_pairing=self._on_cancel_pairing,
+            on_reset_usage=self._on_reset_usage,
         )
         self._provider = theme.new_provider(style_theme)
         Gtk.StyleContext.add_provider_for_screen(
@@ -148,6 +164,11 @@ class RapooApp(Gtk.Application):
             on_report=self._on_report,
         )
         self._monitor.start()
+        self._refresh_usage()
+        # O rótulo do tempo sem recarregar não pode depender só das leituras de
+        # bateria (o mouse dormindo para de mandar report 7): recalcula a cada
+        # minuto enquanto o app roda.
+        GLib.timeout_add_seconds(60, self._tick_usage)
 
     def _retheme(self, code):
         """GTK thread. Rebuilds the CSS provider for `code` and re-applies the
@@ -281,6 +302,7 @@ class RapooApp(Gtk.Application):
     def _apply_update(self, percent, charging, mode):
         self._tray.update(percent, charging=charging, mode=mode)
         self._window.update(percent, charging=charging, mode=mode)
+        self._observe_usage(charging, percent, mode)
         GLib.idle_add(self._refresh_header)
         if not self._dpi_loaded:
             self._dpi_loaded = True
@@ -302,6 +324,90 @@ class RapooApp(Gtk.Application):
                 lang["low_battery"].format(pct=percent),
                 "dialog-warning",
             ).show()
+
+    # --- tempo sem recarregar (medição local) ---
+
+    def _observe_usage(self, charging, percent, mode=None):
+        """GTK thread. Alimenta o contador com cada leitura válida de bateria.
+
+        Só o status (carregando/descarregando) abre ou encerra sessão; a % é
+        apenas diagnóstico — o medidor do mouse recalibra ao desligar/religar e
+        a leitura pode subir sem ter havido recarga. Com o cabo USB a fonte é
+        a tomada mesmo quando o firmware para de reportar `status=2` com a
+        bateria cheia, então esse modo também conta como carga.
+        """
+        tracker = getattr(self, "_usage", None)
+        if tracker is None:
+            return
+        charging = bool(charging) or mode == protocol.MODE_USB
+        self._usage_charging = charging
+        tracker.observe(charging, percent)
+        self._refresh_usage()
+
+    def _refresh_usage(self):
+        """GTK thread. Monta o texto localizado do tempo sem recarregar e
+        publica na janela e no tray. Cosmético: nunca levanta (stubs de teste e
+        estados parciais continuam funcionando)."""
+        tracker = getattr(self, "_usage", None)
+        window = getattr(self, "_window", None)
+        if tracker is None or window is None:
+            return
+        lang = LANGS[getattr(window, "_lang", "pt_BR")]
+        duration = usage.format_duration(tracker.elapsed())
+        charging = bool(
+            getattr(self, "_usage_charging", False) or tracker.is_charging()
+        )
+        if charging:
+            text = lang["usage_charging"]
+            last = tracker.last_session()
+            last_text = (
+                usage.format_duration(last["end"] - last["start"])
+                if last is not None
+                else None
+            )
+            if last_text:
+                text += " · " + lang["usage_last"].format(duration=last_text)
+        elif duration is None:
+            text = lang["usage_none"]
+        else:
+            text = lang["usage_since"].format(duration=duration)
+        since = tracker.since
+        tooltip = lang["usage_tt"].format(
+            when=time.strftime("%d/%m %H:%M", time.localtime(since))
+            if since is not None
+            else "--"
+        )
+        average = usage.format_duration(tracker.average_session())
+        if average:
+            tooltip += " · " + lang["usage_avg"].format(duration=average)
+        if (text, tooltip) == getattr(self, "_usage_last", None):
+            return
+        self._usage_last = (text, tooltip)
+        try:
+            setter = getattr(window, "set_usage", None)
+            if setter is not None:
+                setter(text, tooltip)
+            tray = getattr(self, "_tray", None)
+            tray_setter = getattr(tray, "set_usage", None)
+            if tray_setter is not None:
+                tray_setter(text)
+        except Exception:
+            return
+
+    def _tick_usage(self):
+        """GLib timeout (60 s): mantém o tempo atualizado mesmo sem leituras
+        (o mouse dormindo para de mandar report 7)."""
+        self._refresh_usage()
+        return True
+
+    def _on_reset_usage(self):
+        """Botão "Zerar": o usuário afirma que recarregou agora (escape para
+        quando a carga aconteceu com o PC desligado)."""
+        tracker = getattr(self, "_usage", None)
+        if tracker is None:
+            return
+        tracker.reset()
+        self._refresh_usage()
 
     def _on_state(self, name, **kwargs):
         print(f"[battery] state: {name}", kwargs.get("reason", ""))

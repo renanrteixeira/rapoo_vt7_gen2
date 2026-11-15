@@ -32,6 +32,20 @@ class I18nParityTest(unittest.TestCase):
             ):
                 self.assertIn(key, lang, "locale %s missing key %r" % (code, key))
 
+    def test_usage_keys_present_in_every_locale(self):
+        for code, lang in i18n.LANGS.items():
+            for key in (
+                "usage_since",
+                "usage_none",
+                "usage_charging",
+                "usage_last",
+                "usage_avg",
+                "usage_reset",
+                "usage_reset_tt",
+                "usage_tt",
+            ):
+                self.assertIn(key, lang, "locale %s missing key %r" % (code, key))
+
     def test_param_keys_present_in_every_locale(self):
         for code, lang in i18n.LANGS.items():
             for key in (
@@ -95,6 +109,10 @@ class I18nParityTest(unittest.TestCase):
                 "name_success": {"name": "x"},
                 "factory_reset_ack_error": {},
                 "factory_reset_verify_error": {},
+                "usage_since": {"duration": "1 d 0 h"},
+                "usage_last": {"duration": "1 d 0 h"},
+                "usage_avg": {"duration": "1 d 0 h"},
+                "usage_tt": {"when": "01/01 00:00"},
             }
             for key, kwargs in formats.items():
                 try:

@@ -24,7 +24,11 @@ cython-hidapi lib cannot open the device; see section 4).
 connection mode, DPI, rate — validated: USB/charging/82%), icon with % and
 charging bolt, low battery notification (20%/10%), menu with "Refresh now",
 last read time and "asleep" state. Supports both connections (2.4G + USB cable).
-Autostart (A7) and uninstall (A8) implemented and tested. **UI redesign DONE
+Autostart (A7) and uninstall (A8) implemented and tested. **Tempo sem
+recarregar DONE (2026-11-15)**: contador local persistido (`usage.py`, aba
+Bateria + tray + botão Zerar) — o firmware não tem timestamp/ciclo, então a
+duração vem das transições de `status` vistas pelo app (nunca da %, que
+recalibra); ver §3.5. **UI redesign DONE
 (2026-08-27, `feat/ui-redesign`, spec `_bmad-output/.../spec-ui-redesign.md`)**:
 a token-based **CSS theme** (`theme.py` + `assets/rapoo-vt7.css`) with
 light/dark/**system** resolution (2026-08-28 `system` resolves via
@@ -181,6 +185,23 @@ Relevant (Phase 2):
   X/Y lists (validated: enable=1 → 800↔1200 only). The A Hub toggle is UI-only.
 - `MOUSE_DPI_GEAR_LENGTH`, other fields — see `docs/rapoo_hub_app.js`.
 
+### 3.5 Tempo sem recarregar — não existe no firmware (contador local, 2026-11-15)
+O firmware **não** tem timestamp, RTC nem contador de carga: só `status`
+(0/1/2) e `%` (comandos `0xAA` / report 7). O "battery life calculator" do A Hub
+é estimativa teórica por modo. Portanto o "há quanto tempo sem recarregar" é
+**medido pelo app** (`usage.py`): sessão aberta na primeira leitura em descarga,
+encerrada quando `status=2` é **confirmado** (`CONFIRM_SECONDS=60`; o fim
+gravado é a primeira leitura de carga; modo USB também conta como carga),
+histórico das 10 últimas sessões e média (a UI mostra a última enquanto
+carrega e a média no tooltip). **A % nunca abre/encerra sessão** (o medidor recalibra ao desligar/religar
+e a leitura pode subir sem recarga — só conta como diagnóstico
+`recalibrations`). Estado atômico em `~/.config/rapoo-vt7/usage.json`: remover
+o dongle/dock, fechar o app ou reiniciar o PC **não zera**. UI: linha "Sem
+recarregar há X d Y h" na aba Bateria (tooltip com o início) + botão **Zerar**
+(escape para carga com o PC desligado) + linha muted no tray; GLib timer de
+60 s mantém o texto atualizado com o mouse dormindo (sem leituras). Limite:
+só mede com o app rodando.
+
 ---
 
 ## 4. Why direct hidraw (and not python3-hid)
@@ -222,6 +243,7 @@ rapoo_vt7_gen2/
 │   ├── device.py               ← direct hidraw + interface detection (rid 6)
 │   ├── eeprom.py               ← shared bank0/read_bytes helpers (retro F8)
 │   ├── battery.py              ← thread: 0xAA poll + passive report 7 listen
+│   ├── usage.py                ← tempo sem recarregar (contador local persistido)
 │   ├── dpi.py                  ← Phase 2: read_dpi/set_gear/set_value/set_gears/add_gear/delete_gear
 │   ├── buttons.py              ← Phase 4: method table + read/set_function + ≥1-left rule
 │   ├── gui.py                  ← window in tabs: battery + DPI (active-list radios + editor)
@@ -498,6 +520,11 @@ captured before any write.
   cable (0x4613, prefix 0xFF). `device.py` prefers the USB cable and switches on
   timeout (hot swap). udev rule updated to `1413|4613` (run
   `sudo ./install.sh` or reload udev).
+- [P8] **Tempo sem recarregar** (`usage.py`, 2026-11-15): o firmware não expõe
+  o dado — a contagem é local (transições de `status`, nunca de %). Não é
+  resetada por remoção do dongle/dock, reinício do app ou do PC; só por uma
+  carga confirmada ou pelo botão **Zerar**. Limite: carga com o PC desligado
+  termina na primeira leitura de "carregando" (fim aproximado).
 - [P4] Icon size/readability. The panel shows the appindicator in a square box;
   the extension's `icon-size` controls the size (0 = automatic 16 px).
   Configured to **24 px** (native 24×24 icons, readable number):

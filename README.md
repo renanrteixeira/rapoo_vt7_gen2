@@ -14,6 +14,9 @@ over direct hidraw (no hidapi).
   level, charging bolt; low-battery notifications (20% / 10%)
 - **Passive telemetry** — listens to the firmware's report 7 (battery,
   connection mode, DPI, polling rate) instead of polling; near-zero cost
+- **Tempo sem recarregar** — contador local em dias/horas (última sessão e
+  média no tooltip) com botão de zerar — o firmware do mouse não guarda esse
+  dado; sobrevive a reinício do app/PC e ao power-cycle do mouse
 - **Both connections** — 2.4G receiver (`24ae:1413`) and USB cable
   (`24ae:4613`), hot-swap aware
 - **DPI tab** — active gear list (radio + per-gear X value, add/remove),

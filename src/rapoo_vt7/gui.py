@@ -432,6 +432,7 @@ class BatteryWindow:
         on_rename=None,
         on_start_pairing=None,
         on_cancel_pairing=None,
+        on_reset_usage=None,
     ):
         self._lang = lang if lang in i18n.LANGS else "pt_BR"
         self._on_lang_change = on_lang_change
@@ -453,6 +454,7 @@ class BatteryWindow:
         self._on_rename = on_rename
         self._on_start_pairing = on_start_pairing
         self._on_cancel_pairing = on_cancel_pairing
+        self._on_reset_usage = on_reset_usage
         self._known = False
         self._asleep = False
         self._last = None
@@ -540,6 +542,23 @@ class BatteryWindow:
         self._detail_label = Gtk.Label()
         self._detail_label.set_halign(Gtk.Align.CENTER)
         page1.pack_start(self._detail_label, False, False, 0)
+
+        # Tempo sem recarregar: medido pelo app (o mouse não guarda esse dado).
+        # O texto chega pronto de `main` (já localizado e formatado); o botão
+        # "Zerar" é o escape para quando a recarga aconteceu com o PC desligado.
+        self._usage_row = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=6
+        )
+        self._usage_row.set_halign(Gtk.Align.CENTER)
+        self._usage_label = Gtk.Label()
+        self._usage_label.get_style_context().add_class("muted")
+        self._usage_row.pack_start(self._usage_label, False, False, 0)
+        self._usage_reset_btn = Gtk.Button(label=self._t("usage_reset"))
+        self._usage_reset_btn.set_relief(Gtk.ReliefStyle.NONE)
+        self._usage_reset_btn.set_tooltip_text(self._t("usage_reset_tt"))
+        self._usage_reset_btn.connect("clicked", self._on_usage_reset_clicked)
+        self._usage_row.pack_start(self._usage_reset_btn, False, False, 0)
+        page1.pack_start(self._usage_row, False, False, 0)
 
         lang_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         lang_row.set_halign(Gtk.Align.CENTER)
@@ -1898,6 +1917,20 @@ class BatteryWindow:
             self._asleep = True
             self._render()
 
+    def set_usage(self, text, tooltip=None):
+        """GTK thread. Mostra o tempo sem recarregar (texto já localizado e
+        formatado por `main`) e o tooltip com o início da contagem. Tolerante a
+        janelas montadas via `__new__` nos testes (sem o rótulo)."""
+        label = getattr(self, "_usage_label", None)
+        if label is None:
+            return
+        label.set_text(text or "")
+        label.set_tooltip_text(tooltip)
+
+    def _on_usage_reset_clicked(self, _button):
+        if self._on_reset_usage:
+            self._on_reset_usage()
+
     def _on_close(self, window, event):
         window.hide()
         return True
@@ -1924,6 +1957,10 @@ class BatteryWindow:
             self._lang = code
             self._win.set_title(self._t("window_title"))
             self._lang_label.set_text(self._t("language_label"))
+            usage_btn = getattr(self, "_usage_reset_btn", None)
+            if usage_btn is not None:
+                usage_btn.set_label(self._t("usage_reset"))
+                usage_btn.set_tooltip_text(self._t("usage_reset_tt"))
             # Header theme selector re-translates with the language; guarded
             # so headless __new__-based tests that build a partial window are
             # unaffected.
